@@ -280,6 +280,32 @@ async function setupNim(sandboxName, gpu) {
     }
   }
 
+  // Non-interactive: honor NEMOCLAW_PROVIDER before building interactive options
+  if (isNonInteractive() && process.env.NEMOCLAW_PROVIDER) {
+    const providerKey = process.env.NEMOCLAW_PROVIDER;
+    console.log(`  [non-interactive] Provider: ${providerKey}`);
+    if (providerKey === "ollama") {
+      if (!ollamaRunning) {
+        console.error("  Ollama is not running on localhost:11434. Start it first.");
+        process.exit(1);
+      }
+      provider = "ollama-local";
+      model = process.env.NEMOCLAW_MODEL || "nemotron-3-nano";
+      registry.updateSandbox(sandboxName, { model, provider, nimContainer });
+      return { model, provider };
+    } else if (providerKey === "vllm") {
+      if (!vllmRunning) {
+        console.error("  vLLM is not running on localhost:8000. Start it first.");
+        process.exit(1);
+      }
+      provider = "vllm-local";
+      model = process.env.NEMOCLAW_MODEL || "vllm-local";
+      registry.updateSandbox(sandboxName, { model, provider, nimContainer });
+      return { model, provider };
+    }
+    // "cloud" or "nim" fall through to normal flow below
+  }
+
   // Build options list — only show local options with NEMOCLAW_EXPERIMENTAL=1
   const options = [];
   if (EXPERIMENTAL && gpu && gpu.nimCapable) {
