@@ -40,4 +40,30 @@ describe("macOS smoke install script guardrails", () => {
     assert.notEqual(result.status, 0);
     assert.match(`${result.stdout}${result.stderr}`, /Invalid sandbox name/);
   });
+
+  it("rejects unsupported runtimes", () => {
+    const result = spawnSync("bash", [SMOKE_SCRIPT, "--runtime", "podman"], {
+      cwd: path.join(__dirname, ".."),
+      encoding: "utf-8",
+      env: { ...process.env, NVIDIA_API_KEY: "nvapi-test" },
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}${result.stderr}`, /Unsupported runtime 'podman'/);
+  });
+
+  it("fails when a requested runtime socket is unavailable", () => {
+    const result = spawnSync("bash", [SMOKE_SCRIPT, "--runtime", "docker-desktop"], {
+      cwd: path.join(__dirname, ".."),
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        NVIDIA_API_KEY: "nvapi-test",
+        HOME: "/tmp/nemoclaw-smoke-no-runtime",
+      },
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}${result.stderr}`, /no Docker Desktop socket was found/);
+  });
 });

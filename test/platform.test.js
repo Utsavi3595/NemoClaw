@@ -12,6 +12,7 @@ const {
   inferContainerRuntime,
   isUnsupportedMacosRuntime,
   isWsl,
+  shouldPatchCoredns,
 } = require("../bin/lib/platform");
 
 describe("platform helpers", () => {
@@ -151,6 +152,14 @@ describe("platform helpers", () => {
 
     it("does not flag podman on Linux", () => {
       assert.equal(isUnsupportedMacosRuntime("podman", { platform: "linux" }), false);
+    });
+  });
+
+  describe("shouldPatchCoredns", () => {
+    it("patches CoreDNS for Colima only", () => {
+      assert.equal(shouldPatchCoredns("colima"), true);
+      assert.equal(shouldPatchCoredns("docker-desktop"), false);
+      assert.equal(shouldPatchCoredns("docker"), false);
     });
   });
 });

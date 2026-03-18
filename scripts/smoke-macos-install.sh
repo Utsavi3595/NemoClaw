@@ -18,9 +18,12 @@ fail() { echo -e "${RED}[smoke]${NC} $1"; exit 1; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=./lib/runtime.sh
+. "$SCRIPT_DIR/lib/runtime.sh"
 
 SANDBOX_NAME="smoke-$(date +%Y%m%d%H%M%S)"
 LOG_DIR="${TMPDIR:-/tmp}/nemoclaw-smoke"
+RUNTIME=""
 ALLOW_EXISTING_STATE=false
 KEEP_LOGS=false
 KEEP_OPEN_SHELL=true
@@ -39,6 +42,7 @@ Usage: ./scripts/smoke-macos-install.sh [options]
 Options:
   --sandbox-name <name>       Sandbox name to feed into install.sh
   --log-dir <dir>             Directory for install/uninstall logs
+  --runtime <name>            Select runtime: colima or docker-desktop
   --allow-existing-state      Allow running even if NemoClaw/OpenShell state already exists
   --keep-logs                 Preserve log files after success
   --remove-openshell          Allow uninstall.sh to remove openshell
@@ -60,6 +64,11 @@ while [ $# -gt 0 ]; do
     --log-dir)
       LOG_DIR="${2:-}"
       [ -n "$LOG_DIR" ] || fail "--log-dir requires a value"
+      shift 2
+      ;;
+    --runtime)
+      RUNTIME="${2:-}"
+      [ -n "$RUNTIME" ] || fail "--runtime requires a value"
       shift 2
       ;;
     --allow-existing-state)
@@ -96,6 +105,31 @@ validate_sandbox_name() {
   if ! [[ "$SANDBOX_NAME" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
     fail "Invalid sandbox name '$SANDBOX_NAME'. Use lowercase letters, numbers, and hyphens."
   fi
+}
+
+select_runtime() {
+  case "$RUNTIME" in
+    "")
+      return 0
+      ;;
+    colima)
+      local socket_path
+      socket_path="$(find_colima_docker_socket || true)"
+      [ -n "$socket_path" ] || fail "Requested runtime 'colima', but no Colima Docker socket was found."
+      export DOCKER_HOST="unix://$socket_path"
+      info "Using runtime 'colima' via $socket_path"
+      ;;
+    docker-desktop)
+      local socket_path
+      socket_path="$(find_docker_desktop_socket || true)"
+      [ -n "$socket_path" ] || fail "Requested runtime 'docker-desktop', but no Docker Desktop socket was found."
+      export DOCKER_HOST="unix://$socket_path"
+      info "Using runtime 'docker-desktop' via $socket_path"
+      ;;
+    *)
+      fail "Unsupported runtime '$RUNTIME'. Use 'colima' or 'docker-desktop'."
+      ;;
+  esac
 }
 
 ensure_clean_start() {
@@ -211,6 +245,7 @@ cleanup() {
 
 main() {
   validate_sandbox_name
+  select_runtime
   ensure_clean_start
 
   mkdir -p "$LOG_DIR"

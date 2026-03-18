@@ -13,9 +13,9 @@ const {
   validateLocalProvider,
 } = require("./local-inference");
 const {
-  findColimaDockerSocket,
   inferContainerRuntime,
   isUnsupportedMacosRuntime,
+  shouldPatchCoredns,
 } = require("./platform");
 const { prompt, ensureApiKey, getCredential } = require("./credentials");
 const registry = require("./registry");
@@ -249,8 +249,8 @@ async function startGateway(gpu) {
   }
 
   // CoreDNS fix — always run. k3s-inside-Docker has broken DNS on all platforms.
-  const colimaSocket = findColimaDockerSocket({ existsSync: fs.existsSync });
-  if (colimaSocket) {
+  const runtime = getContainerRuntime();
+  if (shouldPatchCoredns(runtime)) {
     console.log("  Patching CoreDNS for Colima...");
     run(`bash "${path.join(SCRIPTS, "fix-coredns.sh")}" 2>&1 || true`, { ignoreError: true });
   }

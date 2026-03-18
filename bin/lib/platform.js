@@ -35,6 +35,10 @@ function isUnsupportedMacosRuntime(runtime, opts = {}) {
   return platform === "darwin" && runtime === "podman";
 }
 
+function shouldPatchCoredns(runtime) {
+  return runtime === "colima";
+}
+
 function getColimaDockerSocketCandidates(opts = {}) {
   const home = opts.home ?? process.env.HOME ?? "/tmp";
   return [
@@ -94,4 +98,5 @@ module.exports = {
   inferContainerRuntime,
   isUnsupportedMacosRuntime,
   isWsl,
+  shouldPatchCoredns,
 };

@@ -97,7 +97,7 @@ done
 info "Gateway is healthy"
 
 # 2. CoreDNS fix (Colima only)
-if find_colima_docker_socket > /dev/null; then
+if [ "$CONTAINER_RUNTIME" = "colima" ]; then
   info "Patching CoreDNS for Colima..."
   bash "$SCRIPT_DIR/fix-coredns.sh" 2>&1 || warn "CoreDNS patch failed (may not be needed)"
 fi
