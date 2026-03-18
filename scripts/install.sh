@@ -268,9 +268,9 @@ install_openshell
 
 info "Installing nemoclaw CLI..."
 if [ "$NODE_MGR" = "nodesource" ]; then
-  sudo npm install -g nemoclaw
+  sudo npm install -g git+https://github.com/NVIDIA/NemoClaw.git
 else
-  npm install -g nemoclaw
+  npm install -g git+https://github.com/NVIDIA/NemoClaw.git
 fi
 
 if [ "$NEED_RESHIM" = true ]; then

@@ -3,24 +3,14 @@
 
 const { execSync, spawnSync } = require("child_process");
 const path = require("path");
-const fs = require("fs");
+const { detectDockerHost } = require("./platform");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const SCRIPTS = path.join(ROOT, "scripts");
 
-// Auto-detect Colima Docker socket (legacy ~/.colima or XDG ~/.config/colima)
-if (!process.env.DOCKER_HOST) {
-  const home = process.env.HOME || "/tmp";
-  const candidates = [
-    path.join(home, ".colima/default/docker.sock"),
-    path.join(home, ".config/colima/default/docker.sock"),
-  ];
-  for (const sock of candidates) {
-    if (fs.existsSync(sock)) {
-      process.env.DOCKER_HOST = `unix://${sock}`;
-      break;
-    }
-  }
+const dockerHost = detectDockerHost();
+if (dockerHost) {
+  process.env.DOCKER_HOST = dockerHost.dockerHost;
 }
 
 function run(cmd, opts = {}) {

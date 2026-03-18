@@ -9,6 +9,8 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const INSTALLER = path.join(__dirname, "..", "install.sh");
+const GITHUB_INSTALL_URL = "git+https://github.com/NVIDIA/NemoClaw.git";
+const TEST_SYSTEM_PATH = "/usr/bin:/bin";
 
 function writeExecutable(target, contents) {
   fs.writeFileSync(target, contents, { mode: 0o755 });
@@ -50,7 +52,7 @@ exit 98
       env: {
         ...process.env,
         HOME: tmp,
-        PATH: `${fakeBin}:${process.env.PATH}`,
+        PATH: `${fakeBin}:${TEST_SYSTEM_PATH}`,
       },
     });
 
@@ -60,5 +62,130 @@ exit 98
     assert.match(output, /Node\.js >=20 and npm >=10/);
     assert.match(output, /v18\.19\.1/);
     assert.match(output, /9\.8\.1/);
+  });
+
+  it("uses the HTTPS GitHub fallback when not installing from a repo checkout", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-install-fallback-"));
+    const fakeBin = path.join(tmp, "bin");
+    const prefix = path.join(tmp, "prefix");
+    const npmLog = path.join(tmp, "npm.log");
+    fs.mkdirSync(fakeBin);
+    fs.mkdirSync(path.join(prefix, "bin"), { recursive: true });
+
+    writeExecutable(
+      path.join(fakeBin, "node"),
+      `#!/usr/bin/env bash
+if [ "$1" = "--version" ]; then
+  echo "v22.14.0"
+  exit 0
+fi
+echo "unexpected node invocation: $*" >&2
+exit 99
+`,
+    );
+
+    writeExecutable(
+      path.join(fakeBin, "npm"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$NPM_LOG_PATH"
+if [ "$1" = "--version" ]; then
+  echo "10.9.2"
+  exit 0
+fi
+if [ "$1" = "config" ] && [ "$2" = "get" ] && [ "$3" = "prefix" ]; then
+  echo "$NPM_PREFIX"
+  exit 0
+fi
+if [ "$1" = "install" ] && [ "$2" = "-g" ] && [ "$3" = "${GITHUB_INSTALL_URL}" ]; then
+  cat > "$NPM_PREFIX/bin/nemoclaw" <<'EOS'
+#!/usr/bin/env bash
+if [ "$1" = "onboard" ]; then
+  exit 0
+fi
+if [ "$1" = "--version" ]; then
+  echo "v0.1.0-test"
+  exit 0
+fi
+exit 0
+EOS
+  chmod +x "$NPM_PREFIX/bin/nemoclaw"
+  exit 0
+fi
+echo "unexpected npm invocation: $*" >&2
+exit 98
+`,
+    );
+
+    const result = spawnSync("bash", [INSTALLER], {
+      cwd: tmp,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        HOME: tmp,
+        PATH: `${fakeBin}:${TEST_SYSTEM_PATH}`,
+        NPM_PREFIX: prefix,
+        NPM_LOG_PATH: npmLog,
+      },
+    });
+
+    assert.equal(result.status, 0);
+    assert.match(fs.readFileSync(npmLog, "utf-8"), new RegExp(`install -g ${GITHUB_INSTALL_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  });
+
+  it("prints the HTTPS GitHub remediation when the binary is missing", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-install-remediation-"));
+    const fakeBin = path.join(tmp, "bin");
+    const prefix = path.join(tmp, "prefix");
+    fs.mkdirSync(fakeBin);
+    fs.mkdirSync(path.join(prefix, "bin"), { recursive: true });
+
+    writeExecutable(
+      path.join(fakeBin, "node"),
+      `#!/usr/bin/env bash
+if [ "$1" = "--version" ]; then
+  echo "v22.14.0"
+  exit 0
+fi
+echo "unexpected node invocation: $*" >&2
+exit 99
+`,
+    );
+
+    writeExecutable(
+      path.join(fakeBin, "npm"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = "--version" ]; then
+  echo "10.9.2"
+  exit 0
+fi
+if [ "$1" = "config" ] && [ "$2" = "get" ] && [ "$3" = "prefix" ]; then
+  echo "$NPM_PREFIX"
+  exit 0
+fi
+if [ "$1" = "install" ] && [ "$2" = "-g" ] && [ "$3" = "${GITHUB_INSTALL_URL}" ]; then
+  exit 0
+fi
+echo "unexpected npm invocation: $*" >&2
+exit 98
+`,
+    );
+
+    const result = spawnSync("bash", [INSTALLER], {
+      cwd: tmp,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        HOME: tmp,
+        PATH: `${fakeBin}:${TEST_SYSTEM_PATH}`,
+        NPM_PREFIX: prefix,
+      },
+    });
+
+    const output = `${result.stdout}${result.stderr}`;
+    assert.notEqual(result.status, 0);
+    assert.match(output, new RegExp(GITHUB_INSTALL_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(output, /npm install -g nemoclaw/);
   });
 });

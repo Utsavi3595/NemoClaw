@@ -29,6 +29,11 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=./lib/runtime.sh
+. "$SCRIPT_DIR/lib/runtime.sh"
+
 info() { echo -e "${GREEN}>>>${NC} $1"; }
 warn() { echo -e "${YELLOW}>>>${NC} $1"; }
 fail() { echo -e "${RED}>>>${NC} $1"; exit 1; }
@@ -51,25 +56,20 @@ upsert_provider() {
   fi
 }
 
-# Resolve DOCKER_HOST for Colima if needed (legacy ~/.colima or XDG ~/.config/colima)
-if [ -z "${DOCKER_HOST:-}" ]; then
-  for _sock in "$HOME/.colima/default/docker.sock" "$HOME/.config/colima/default/docker.sock"; do
-    if [ -S "$_sock" ]; then
-      export DOCKER_HOST="unix://$_sock"
-      warn "Using Colima Docker socket: $_sock"
-      break
-    fi
-  done
-  unset _sock
+# Resolve DOCKER_HOST for macOS user-scoped runtimes when needed.
+if docker_host="$(detect_docker_host)"; then
+  export DOCKER_HOST="$docker_host"
+  if colima_socket="$(find_colima_docker_socket)"; then
+    warn "Using Colima Docker socket: $colima_socket"
+  elif docker_desktop_socket="$(find_docker_desktop_socket)"; then
+    warn "Using Docker Desktop socket: $docker_desktop_socket"
+  fi
 fi
 
 # Check prerequisites
 command -v openshell > /dev/null || fail "openshell CLI not found. Install the binary from https://github.com/NVIDIA/OpenShell/releases"
 command -v docker > /dev/null || fail "docker not found"
 [ -n "${NVIDIA_API_KEY:-}" ] || fail "NVIDIA_API_KEY not set. Get one from build.nvidia.com"
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 1. Gateway — always start fresh to avoid stale state
 info "Starting OpenShell gateway..."
@@ -89,7 +89,7 @@ done
 info "Gateway is healthy"
 
 # 2. CoreDNS fix (Colima only)
-if [ -S "$HOME/.colima/default/docker.sock" ]; then
+if find_colima_docker_socket > /dev/null; then
   info "Patching CoreDNS for Colima..."
   bash "$SCRIPT_DIR/fix-coredns.sh" 2>&1 || warn "CoreDNS patch failed (may not be needed)"
 fi

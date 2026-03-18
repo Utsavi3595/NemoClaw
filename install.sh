@@ -198,9 +198,9 @@ install_nemoclaw() {
     info "NemoClaw package.json found in current directory — installing from source…"
     npm install && npm link
   else
-    info "Installing NemoClaw from npm…"
+    info "Installing NemoClaw from GitHub…"
     # Revert once https://github.com/NVIDIA/NemoClaw/issues/71 is complete and the package is published
-    npm install -g git+ssh://git@github.com/nvidia/NemoClaw.git
+    npm install -g git+https://github.com/NVIDIA/NemoClaw.git
   fi
 
   refresh_path
@@ -236,7 +236,7 @@ verify_nemoclaw() {
     return 0
   else
     warn "Could not locate the nemoclaw executable."
-    warn "Try running:  npm install -g nemoclaw"
+    warn "Try running:  npm install -g git+https://github.com/NVIDIA/NemoClaw.git"
   fi
 
   error "Installation failed: nemoclaw binary not found."

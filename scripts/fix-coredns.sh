@@ -19,16 +19,11 @@
 set -euo pipefail
 
 GATEWAY_NAME="${1:-}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=./lib/runtime.sh
+. "$SCRIPT_DIR/lib/runtime.sh"
 
-# Find Colima socket (legacy or XDG path)
-COLIMA_SOCKET=""
-for _sock in "$HOME/.colima/default/docker.sock" "$HOME/.config/colima/default/docker.sock"; do
-  if [ -S "$_sock" ]; then
-    COLIMA_SOCKET="$_sock"
-    break
-  fi
-done
-unset _sock
+COLIMA_SOCKET="$(find_colima_docker_socket || true)"
 
 if [ -z "${DOCKER_HOST:-}" ]; then
   if [ -n "$COLIMA_SOCKET" ]; then
