@@ -31,7 +31,5 @@
 ### Doc changes
 <!-- Skip if this PR has no doc changes. -->
 - [ ] Follows the [style guide](docs/CONTRIBUTING.md). Try running the `update-docs` agent skill to draft changes while complying with the style guide. For example, prompt your agent with "`/update-docs` catch up the docs for the new changes I made in this PR."
-- [ ] New pages include SPDX license header and frontmatter
-- [ ] Code examples are accurate and use `console` language with `$` prefix
-- [ ] No LLM-generated patterns (unnecessary bold, em dashes, superlatives, hedge words)
+- [ ] New pages include SPDX license header and frontmatter (if creating a new page)
 - [ ] Cross-references and links verified
