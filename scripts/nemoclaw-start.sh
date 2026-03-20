@@ -80,15 +80,14 @@ PYAUTH
 }
 
 lock_gateway_config() {
-  # Lock openclaw.json so the sandboxed agent (running as "sandbox" user)
-  # cannot modify auth tokens, CORS origins, or other gateway security
-  # settings.  In the standard (non-exec) path the gateway runs in the
-  # background and may overwrite the config to generate an auth token, so
-  # we poll for the token before locking to avoid a race condition.
+  # Lock openclaw.json so the sandboxed agent cannot modify auth tokens,
+  # CORS origins, or other gateway security settings.  Uses a narrow
+  # sudoers entry to escalate to root for the chown/chmod only.
+  # In the standard path, polls for the gateway to finish writing the
+  # auth token before locking to avoid a race condition.
   # Ref: https://github.com/NVIDIA/NemoClaw/issues/514
-  local config_path config_dir
-  config_path="$(python3 -c "import os; print(os.path.join(os.environ.get('HOME', '/sandbox'), '.openclaw', 'openclaw.json'))")"
-  config_dir="$(dirname "$config_path")"
+  local config_path
+  config_path="${HOME:-/sandbox}/.openclaw/openclaw.json"
 
   if [ ! -f "$config_path" ]; then
     return
@@ -108,14 +107,7 @@ sys.exit(0 if cfg.get('gateway',{}).get('auth',{}).get('token') else 1)
     sleep 1
   done
 
-  # Lock the config file
-  chown root:root "$config_path"
-  chmod 444 "$config_path"
-
-  # Lock the parent directory so the agent cannot delete and recreate the file
-  chown root:root "$config_dir"
-  chmod 555 "$config_dir"
-
+  sudo /usr/local/bin/lock-gateway-config
   echo "[security] gateway config locked: $config_path"
 }
 

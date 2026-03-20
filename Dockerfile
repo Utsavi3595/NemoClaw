@@ -15,7 +15,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-pip python3-venv \
         curl git ca-certificates \
-        iproute2 \
+        iproute2 sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Create sandbox user (matches OpenShell convention)
@@ -42,6 +42,15 @@ RUN npm install --omit=dev
 # Set up blueprint for local resolution
 RUN mkdir -p /sandbox/.nemoclaw/blueprints/0.1.0 \
     && cp -r /opt/nemoclaw-blueprint/* /sandbox/.nemoclaw/blueprints/0.1.0/
+
+# Lock script: sandbox user can escalate to root for this single operation.
+# Locks openclaw.json so the agent cannot tamper with auth/CORS settings.
+# Ref: https://github.com/NVIDIA/NemoClaw/issues/514
+COPY scripts/lock-gateway-config.sh /usr/local/bin/lock-gateway-config
+RUN chmod 755 /usr/local/bin/lock-gateway-config \
+    && echo 'sandbox ALL=(root) NOPASSWD: /usr/local/bin/lock-gateway-config' \
+       > /etc/sudoers.d/lock-gateway-config \
+    && chmod 440 /etc/sudoers.d/lock-gateway-config
 
 # Copy startup script
 COPY scripts/nemoclaw-start.sh /usr/local/bin/nemoclaw-start
