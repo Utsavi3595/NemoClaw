@@ -12,9 +12,9 @@ import {
   buildSandboxConfigSyncScript,
   getFutureShellPathHint,
   getInstalledOpenshellVersion,
+  getStableGatewayImageRef,
   pruneStaleSandboxEntry,
   runCaptureOpenshell,
-  getStableGatewayImageRef,
   writeSandboxConfigSyncFile,
 } from "../bin/lib/onboard";
 

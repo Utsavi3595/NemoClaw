@@ -275,6 +275,13 @@ function runCaptureOpenshell(args, opts = {}) {
   return runCapture(openshellShellCommand(args), opts);
 }
 
+function getStableGatewayImageRef() {
+  const output = runCaptureOpenshell(["--version"], { ignoreError: true });
+  const match = output.match(/openshell\s+([0-9]+\.[0-9]+\.[0-9]+)/i);
+  if (!match) return null;
+  return `ghcr.io/nvidia/openshell/cluster:${match[1]}`;
+}
+
 function formatEnvAssignment(name, value) {
   return `${name}=${value}`;
 }
@@ -1232,6 +1239,11 @@ async function setupPolicies(sandboxName) {
           break;
         } catch (err) {
           const message = err && err.message ? err.message : String(err);
+          if (message.includes("Unimplemented")) {
+            console.error("  OpenShell policy updates are not supported by this gateway build.");
+            console.error("  This is a known issue tracked in NemoClaw #536.");
+            throw err;
+          }
           if (!message.includes("sandbox not found") || attempt === 2) {
             throw err;
           }
@@ -1261,12 +1273,30 @@ async function setupPolicies(sandboxName) {
       const picks = await prompt("  Enter preset names (comma-separated): ");
       const selected = picks.split(",").map((s) => s.trim()).filter(Boolean);
       for (const name of selected) {
-        policies.applyPreset(sandboxName, name);
+        try {
+          policies.applyPreset(sandboxName, name);
+        } catch (err) {
+          const message = err && err.message ? err.message : String(err);
+          if (message.includes("Unimplemented")) {
+            console.error("  OpenShell policy updates are not supported by this gateway build.");
+            console.error("  This is a known issue tracked in NemoClaw #536.");
+          }
+          throw err;
+        }
       }
     } else {
       // Apply suggested
       for (const name of suggestions) {
-        policies.applyPreset(sandboxName, name);
+        try {
+          policies.applyPreset(sandboxName, name);
+        } catch (err) {
+          const message = err && err.message ? err.message : String(err);
+          if (message.includes("Unimplemented")) {
+            console.error("  OpenShell policy updates are not supported by this gateway build.");
+            console.error("  This is a known issue tracked in NemoClaw #536.");
+          }
+          throw err;
+        }
       }
     }
   }
