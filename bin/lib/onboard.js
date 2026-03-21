@@ -338,6 +338,20 @@ function verifyInferenceRoute(provider, model) {
   }
 }
 
+function sandboxExistsInGateway(sandboxName) {
+  const output = runCaptureOpenshell(["sandbox", "get", sandboxName], { ignoreError: true });
+  return Boolean(output);
+}
+
+function pruneStaleSandboxEntry(sandboxName) {
+  const existing = registry.getSandbox(sandboxName);
+  const liveExists = sandboxExistsInGateway(sandboxName);
+  if (existing && !liveExists) {
+    registry.removeSandbox(sandboxName);
+  }
+  return liveExists;
+}
+
 function pythonLiteralJson(value) {
   return JSON.stringify(JSON.stringify(value));
 }
@@ -708,9 +722,10 @@ async function createSandbox(gpu) {
     process.exit(1);
   }
 
-  // Check if sandbox already exists in registry
-  const existing = registry.getSandbox(sandboxName);
-  if (existing) {
+  // Reconcile local registry state with the live OpenShell gateway state.
+  const liveExists = pruneStaleSandboxEntry(sandboxName);
+
+  if (liveExists) {
     if (isNonInteractive()) {
       if (process.env.NEMOCLAW_RECREATE_SANDBOX !== "1") {
         console.error(`  Sandbox '${sandboxName}' already exists.`);
@@ -1346,6 +1361,7 @@ module.exports = {
   hasStaleGateway,
   isSandboxReady,
   onboard,
+  pruneStaleSandboxEntry,
   runCaptureOpenshell,
   setupInference,
   setupNim,

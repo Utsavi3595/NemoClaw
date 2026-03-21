@@ -11,6 +11,7 @@ import {
   buildSandboxConfigSyncScript,
   getFutureShellPathHint,
   getInstalledOpenshellVersion,
+  pruneStaleSandboxEntry,
   runCaptureOpenshell,
   getStableGatewayImageRef,
   writeSandboxConfigSyncFile,
@@ -318,5 +319,47 @@ const { setupInference } = require(${onboardPath});
     assert.match(commands[1].command, /provider' 'update' 'openai-api'/);
     assert.doesNotMatch(commands[1].command, /'--type'/);
     assert.match(commands[2].command, /inference' 'set' '--no-verify'/);
+  });
+
+  it("drops stale local sandbox registry entries when the live sandbox is gone", () => {
+    const repoRoot = path.join(__dirname, "..");
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-stale-sandbox-"));
+    const fakeBin = path.join(tmpDir, "bin");
+    const scriptPath = path.join(tmpDir, "stale-sandbox-check.js");
+    const onboardPath = JSON.stringify(path.join(repoRoot, "bin", "lib", "onboard.js"));
+    const registryPath = JSON.stringify(path.join(repoRoot, "bin", "lib", "registry.js"));
+    const runnerPath = JSON.stringify(path.join(repoRoot, "bin", "lib", "runner.js"));
+
+    fs.mkdirSync(fakeBin, { recursive: true });
+    fs.writeFileSync(path.join(fakeBin, "openshell"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+
+    const script = String.raw`
+const registry = require(${registryPath});
+const runner = require(${runnerPath});
+runner.runCapture = (command) => (command.includes("'sandbox' 'get' 'my-assistant'") ? "" : "");
+
+registry.registerSandbox({ name: "my-assistant" });
+
+const { pruneStaleSandboxEntry } = require(${onboardPath});
+
+const liveExists = pruneStaleSandboxEntry("my-assistant");
+console.log(JSON.stringify({ liveExists, sandbox: registry.getSandbox("my-assistant") }));
+`;
+    fs.writeFileSync(scriptPath, script);
+
+    const result = spawnSync(process.execPath, [scriptPath], {
+      cwd: repoRoot,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        HOME: tmpDir,
+        PATH: `${fakeBin}:${process.env.PATH || ""}`,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout.trim().split("\n").pop());
+    assert.equal(payload.liveExists, false);
+    assert.equal(payload.sandbox, null);
   });
 });
