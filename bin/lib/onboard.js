@@ -266,12 +266,27 @@ function openshellShellCommand(args) {
   return [shellQuote(getOpenshellBinary()), ...args.map((arg) => shellQuote(arg))].join(" ");
 }
 
+function withGatewayArgs(args) {
+  if (
+    args.includes("-g") ||
+    args.includes("--gateway") ||
+    args.includes("--gateway-endpoint") ||
+    args[0] === "--version" ||
+    args[0] === "-V" ||
+    args[0] === "--help" ||
+    args[0] === "-h"
+  ) {
+    return args;
+  }
+  return ["-g", "nemoclaw", ...args];
+}
+
 function runOpenshell(args, opts = {}) {
-  return run(openshellShellCommand(args), opts);
+  return run(openshellShellCommand(withGatewayArgs(args)), opts);
 }
 
 function runCaptureOpenshell(args, opts = {}) {
-  return runCapture(openshellShellCommand(args), opts);
+  return runCapture(openshellShellCommand(withGatewayArgs(args)), opts);
 }
 
 function formatEnvAssignment(name, value) {
@@ -1324,6 +1339,7 @@ module.exports = {
   hasStaleGateway,
   isSandboxReady,
   onboard,
+  runCaptureOpenshell,
   setupInference,
   setupNim,
   writeSandboxConfigSyncFile,
