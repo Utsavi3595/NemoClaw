@@ -40,7 +40,6 @@ const DIM = USE_COLOR ? "\x1b[2m" : "";
 const RESET = USE_COLOR ? "\x1b[0m" : "";
 let OPENSHELL_BIN = null;
 const GATEWAY_NAME = "nemoclaw";
-const GATEWAY_ENDPOINT = "https://127.0.0.1:8080";
 
 const BUILD_ENDPOINT_URL = "https://integrate.api.nvidia.com/v1";
 const OPENAI_ENDPOINT_URL = "https://api.openai.com/v1";
@@ -270,8 +269,9 @@ function openshellShellCommand(args) {
 
 function withGatewayArgs(args) {
   if (
+    args.includes("-g") ||
+    args.includes("--gateway") ||
     args[0] === "gateway" ||
-    args.includes("--gateway-endpoint") ||
     args[0] === "--version" ||
     args[0] === "-V" ||
     args[0] === "--help" ||
@@ -279,11 +279,11 @@ function withGatewayArgs(args) {
   ) {
     return args;
   }
-  const gatewayEndpoint = process.env.OPENSHELL_GATEWAY_ENDPOINT;
-  if (!gatewayEndpoint) {
+  const gatewayName = process.env.OPENSHELL_GATEWAY;
+  if (!gatewayName) {
     return args;
   }
-  return ["--gateway-endpoint", gatewayEndpoint, ...args];
+  return ["-g", gatewayName, ...args];
 }
 
 function runOpenshell(args, opts = {}) {
@@ -699,7 +699,8 @@ async function startGateway(gpu) {
   }
   // Give DNS a moment to propagate
   sleep(5);
-  process.env.OPENSHELL_GATEWAY_ENDPOINT = GATEWAY_ENDPOINT;
+  runOpenshell(["gateway", "select", GATEWAY_NAME], { ignoreError: true });
+  process.env.OPENSHELL_GATEWAY = GATEWAY_NAME;
 }
 
 // ── Step 3: Sandbox ──────────────────────────────────────────────
@@ -1110,6 +1111,7 @@ async function setupNim(sandboxName, gpu) {
 
 async function setupInference(sandboxName, model, provider, endpointUrl = null, credentialEnv = null) {
   step(5, 7, "Setting up inference provider");
+  runOpenshell(["gateway", "select", GATEWAY_NAME], { ignoreError: true });
 
   if (provider === "nvidia-prod" || provider === "nvidia-nim" || provider === "openai-api" || provider === "anthropic-prod" || provider === "gemini-api" || provider === "compatible-endpoint" || provider === "nvidia-ncp") {
     const config = provider === "nvidia-nim"
@@ -1335,7 +1337,6 @@ function printDashboard(sandboxName, model, provider) {
 async function onboard(opts = {}) {
   NON_INTERACTIVE = opts.nonInteractive || process.env.NEMOCLAW_NON_INTERACTIVE === "1";
   delete process.env.OPENSHELL_GATEWAY;
-  delete process.env.OPENSHELL_GATEWAY_ENDPOINT;
 
   console.log("");
   console.log("  NemoClaw Onboarding");
