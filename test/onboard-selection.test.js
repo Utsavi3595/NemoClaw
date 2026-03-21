@@ -71,17 +71,13 @@ const { setupNim } = require(${onboardPath});
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).not.toBe("");
     const payload = JSON.parse(result.stdout.trim());
-    expect(payload.result.provider).toBe("nvidia-nim");
+    expect(payload.result.provider).toBe("nvidia-prod");
     expect(payload.result.model).toBe("nvidia/nemotron-3-super-120b-a12b");
     expect(payload.promptCalls).toBe(2);
     expect(payload.messages[0]).toMatch(/Choose \[/);
     expect(payload.messages[1]).toMatch(/Choose model \[1\]/);
-    expect(
-      payload.lines.some((line) => line.includes("Detected local inference option"))
-    ).toBeTruthy();
-    expect(
-      payload.lines.some((line) => line.includes("Press Enter to keep the cloud default"))
-    ).toBeTruthy();
+    expect(payload.lines.some((line) => line.includes("Detected local inference option"))).toBeTruthy();
+    expect(payload.lines.some((line) => line.includes("Press Enter to keep NVIDIA hosted"))).toBeTruthy();
     expect(payload.lines.some((line) => line.includes("Cloud models:"))).toBeTruthy();
   });
 });

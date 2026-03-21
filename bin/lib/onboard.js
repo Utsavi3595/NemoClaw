@@ -29,7 +29,7 @@ const {
   shouldPatchCoredns,
 } = require("./platform");
 const { resolveOpenshell } = require("./resolve-openshell");
-const { prompt, ensureApiKey, getCredential } = require("./credentials");
+const { prompt, ensureApiKey, getCredential, saveCredential } = require("./credentials");
 const registry = require("./registry");
 const nim = require("./nim");
 const policies = require("./policies");
@@ -39,6 +39,78 @@ const USE_COLOR = !process.env.NO_COLOR && !!process.stdout.isTTY;
 const DIM = USE_COLOR ? "\x1b[2m" : "";
 const RESET = USE_COLOR ? "\x1b[0m" : "";
 let OPENSHELL_BIN = null;
+
+const BUILD_ENDPOINT_URL = "https://integrate.api.nvidia.com/v1";
+const OPENAI_ENDPOINT_URL = "https://api.openai.com/v1";
+const ANTHROPIC_ENDPOINT_URL = "https://api.anthropic.com";
+const GEMINI_ENDPOINT_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
+
+const REMOTE_PROVIDER_CONFIG = {
+  build: {
+    label: "NVIDIA hosted",
+    providerName: "nvidia-prod",
+    providerType: "nvidia",
+    credentialEnv: "NVIDIA_API_KEY",
+    endpointUrl: BUILD_ENDPOINT_URL,
+    helpUrl: "https://build.nvidia.com/settings/api-keys",
+    modelMode: "catalog",
+    defaultModel: DEFAULT_CLOUD_MODEL,
+  },
+  openai: {
+    label: "OpenAI",
+    providerName: "openai-api",
+    providerType: "openai",
+    credentialEnv: "OPENAI_API_KEY",
+    endpointUrl: OPENAI_ENDPOINT_URL,
+    helpUrl: "https://platform.openai.com/api-keys",
+    modelMode: "input",
+    defaultModel: "gpt-5.4",
+    skipVerify: true,
+  },
+  anthropic: {
+    label: "Anthropic",
+    providerName: "anthropic-prod",
+    providerType: "anthropic",
+    credentialEnv: "ANTHROPIC_API_KEY",
+    endpointUrl: ANTHROPIC_ENDPOINT_URL,
+    helpUrl: "https://console.anthropic.com/settings/keys",
+    modelMode: "input",
+    defaultModel: "claude-sonnet-4-5",
+  },
+  gemini: {
+    label: "Google Gemini",
+    providerName: "gemini-api",
+    providerType: "openai",
+    credentialEnv: "GEMINI_API_KEY",
+    endpointUrl: GEMINI_ENDPOINT_URL,
+    helpUrl: "https://aistudio.google.com/app/apikey",
+    modelMode: "input",
+    defaultModel: "gemini-3-flash-preview",
+    skipVerify: true,
+  },
+  custom: {
+    label: "Other OpenAI-compatible endpoint",
+    providerName: "compatible-endpoint",
+    providerType: "openai",
+    credentialEnv: "COMPATIBLE_API_KEY",
+    endpointUrl: "",
+    helpUrl: null,
+    modelMode: "input",
+    defaultModel: "",
+    skipVerify: true,
+  },
+  ncp: {
+    label: "NVIDIA Cloud Partner",
+    providerName: "nvidia-ncp",
+    providerType: "openai",
+    credentialEnv: "NVIDIA_API_KEY",
+    endpointUrl: "",
+    helpUrl: "https://build.nvidia.com/settings/api-keys",
+    modelMode: "catalog",
+    defaultModel: DEFAULT_CLOUD_MODEL,
+    skipVerify: true,
+  },
+};
 
 // Non-interactive mode: set by --non-interactive flag or env var.
 // When active, all prompts use env var overrides or sensible defaults.
@@ -206,22 +278,23 @@ function formatEnvAssignment(name, value) {
   return `${name}=${value}`;
 }
 
+function buildProviderArgs(action, name, type, credentialEnv, baseUrl) {
+  const args =
+    action === "create"
+      ? ["provider", "create", "--name", name, "--type", type, "--credential", credentialEnv]
+      : ["provider", "update", name, "--type", type, "--credential", credentialEnv];
+  if (baseUrl && type === "openai") {
+    args.push("--config", `OPENAI_BASE_URL=${baseUrl}`);
+  }
+  return args;
+}
+
 function upsertProvider(name, type, credentialEnv, baseUrl, env = {}) {
-  const createArgs = [
-    "provider", "create",
-    "--name", name,
-    "--type", type,
-    "--credential", credentialEnv,
-    "--config", `OPENAI_BASE_URL=${baseUrl}`,
-  ];
+  const createArgs = buildProviderArgs("create", name, type, credentialEnv, baseUrl);
   const createResult = runOpenshell(createArgs, { ignoreError: true, env });
   if (createResult.status === 0) return;
 
-  const updateArgs = [
-    "provider", "update", name,
-    "--credential", credentialEnv,
-    "--config", `OPENAI_BASE_URL=${baseUrl}`,
-  ];
+  const updateArgs = buildProviderArgs("update", name, type, credentialEnv, baseUrl);
   const updateResult = runOpenshell(updateArgs, { ignoreError: true, env });
   if (updateResult.status !== 0) {
     console.error(`  Failed to create or update provider '${name}'.`);
@@ -364,6 +437,33 @@ function sleep(seconds) {
   require("child_process").spawnSync("sleep", [String(seconds)]);
 }
 
+async function ensureNamedCredential(envName, label, helpUrl = null) {
+  let key = getCredential(envName);
+  if (key) {
+    process.env[envName] = key;
+    return key;
+  }
+
+  if (helpUrl) {
+    console.log("");
+    console.log(`  Get your ${label} from: ${helpUrl}`);
+    console.log("");
+  }
+
+  key = await prompt(`  ${label}: `, { secret: true });
+  if (!key) {
+    console.error(`  ${label} is required.`);
+    process.exit(1);
+  }
+
+  saveCredential(envName, key);
+  process.env[envName] = key;
+  console.log("");
+  console.log(`  Key saved to ~/.nemoclaw/credentials.json (mode 600)`);
+  console.log("");
+  return key;
+}
+
 function waitForSandboxReady(sandboxName, attempts = 10, delaySeconds = 2) {
   for (let i = 0; i < attempts; i += 1) {
     const exists = runCaptureOpenshell(["sandbox", "get", sandboxName], { ignoreError: true });
@@ -387,15 +487,20 @@ function isSafeModelId(value) {
 function getNonInteractiveProvider() {
   const providerKey = (process.env.NEMOCLAW_PROVIDER || "").trim().toLowerCase();
   if (!providerKey) return null;
-
-  const validProviders = new Set(["cloud", "ollama", "vllm", "nim"]);
-  if (!validProviders.has(providerKey)) {
+  const aliases = {
+    cloud: "build",
+    nim: "nim-local",
+    vllm: "vllm",
+  };
+  const normalized = aliases[providerKey] || providerKey;
+  const validProviders = new Set(["build", "openai", "anthropic", "gemini", "ollama", "custom", "ncp", "nim-local", "vllm"]);
+  if (!validProviders.has(normalized)) {
     console.error(`  Unsupported NEMOCLAW_PROVIDER: ${providerKey}`);
-    console.error("  Valid values: cloud, ollama, vllm, nim");
+    console.error("  Valid values: build, openai, anthropic, gemini, ollama, custom, ncp, nim-local, vllm");
     process.exit(1);
   }
 
-  return providerKey;
+  return normalized;
 }
 
 function getNonInteractiveModel(providerKey) {
@@ -723,26 +828,30 @@ async function setupNim(sandboxName, gpu) {
   step(4, 7, "Configuring inference (NIM)");
 
   let model = null;
-  let provider = "nvidia-nim";
+  let provider = REMOTE_PROVIDER_CONFIG.build.providerName;
   let nimContainer = null;
+  let endpointUrl = REMOTE_PROVIDER_CONFIG.build.endpointUrl;
+  let credentialEnv = REMOTE_PROVIDER_CONFIG.build.credentialEnv;
 
   // Detect local inference options
   const hasOllama = !!runCapture("command -v ollama", { ignoreError: true });
   const ollamaRunning = !!runCapture("curl -sf http://localhost:11434/api/tags 2>/dev/null", { ignoreError: true });
   const vllmRunning = !!runCapture("curl -sf http://localhost:8000/v1/models 2>/dev/null", { ignoreError: true });
   const requestedProvider = isNonInteractive() ? getNonInteractiveProvider() : null;
-  const requestedModel = isNonInteractive() ? getNonInteractiveModel(requestedProvider || "cloud") : null;
-  // Build options list — only show local options with NEMOCLAW_EXPERIMENTAL=1
+  const requestedModel = isNonInteractive() ? getNonInteractiveModel(requestedProvider || "build") : null;
   const options = [];
-  if (EXPERIMENTAL && gpu && gpu.nimCapable) {
-    options.push({ key: "nim", label: "Local NIM container (NVIDIA GPU) [experimental]" });
-  }
   options.push({
-    key: "cloud",
+    key: "build",
     label:
-      "NVIDIA Endpoint API (build.nvidia.com)" +
+      "NVIDIA hosted" +
       (!ollamaRunning && !(EXPERIMENTAL && vllmRunning) ? " (recommended)" : ""),
   });
+  options.push({ key: "openai", label: "OpenAI" });
+  options.push({ key: "anthropic", label: "Anthropic" });
+  options.push({ key: "gemini", label: "Google Gemini" });
+  if (EXPERIMENTAL && gpu && gpu.nimCapable) {
+    options.push({ key: "nim-local", label: "Local NVIDIA NIM [experimental]" });
+  }
   if (hasOllama || ollamaRunning) {
     options.push({
       key: "ollama",
@@ -754,9 +863,11 @@ async function setupNim(sandboxName, gpu) {
   if (EXPERIMENTAL && vllmRunning) {
     options.push({
       key: "vllm",
-      label: "Existing vLLM instance (localhost:8000) — running [experimental] (suggested)",
+      label: "Local vLLM [experimental] — running",
     });
   }
+  options.push({ key: "custom", label: "Other OpenAI-compatible endpoint" });
+  options.push({ key: "ncp", label: "NVIDIA Cloud Partner" });
 
   // On macOS without Ollama, offer to install it
   if (!hasOllama && process.platform === "darwin") {
@@ -767,7 +878,7 @@ async function setupNim(sandboxName, gpu) {
     let selected;
 
     if (isNonInteractive()) {
-      const providerKey = requestedProvider || "cloud";
+      const providerKey = requestedProvider || "build";
       selected = options.find((o) => o.key === providerKey);
       if (!selected) {
         console.error(`  Requested provider '${providerKey}' is not available in this environment.`);
@@ -780,7 +891,7 @@ async function setupNim(sandboxName, gpu) {
       if (ollamaRunning) suggestions.push("Ollama");
       if (suggestions.length > 0) {
         console.log(`  Detected local inference option${suggestions.length > 1 ? "s" : ""}: ${suggestions.join(", ")}`);
-        console.log("  Select one explicitly to use it. Press Enter to keep the cloud default.");
+        console.log("  Select one explicitly to use it. Press Enter to keep NVIDIA hosted.");
         console.log("");
       }
 
@@ -791,13 +902,62 @@ async function setupNim(sandboxName, gpu) {
       });
       console.log("");
 
-      const defaultIdx = options.findIndex((o) => o.key === "cloud") + 1;
+      const defaultIdx = options.findIndex((o) => o.key === "build") + 1;
       const choice = await prompt(`  Choose [${defaultIdx}]: `);
       const idx = parseInt(choice || String(defaultIdx), 10) - 1;
       selected = options[idx] || options[defaultIdx - 1];
     }
 
-    if (selected.key === "nim") {
+    if (REMOTE_PROVIDER_CONFIG[selected.key]) {
+      const remoteConfig = REMOTE_PROVIDER_CONFIG[selected.key];
+      provider = remoteConfig.providerName;
+      credentialEnv = remoteConfig.credentialEnv;
+      endpointUrl = remoteConfig.endpointUrl;
+
+      if (selected.key === "custom") {
+        endpointUrl = isNonInteractive()
+          ? (process.env.NEMOCLAW_ENDPOINT_URL || "").trim()
+          : await prompt("  OpenAI-compatible base URL (e.g., https://openrouter.ai/api/v1): ");
+        if (!endpointUrl) {
+          console.error("  Endpoint URL is required for Other OpenAI-compatible endpoint.");
+          process.exit(1);
+        }
+      } else if (selected.key === "ncp") {
+        endpointUrl = isNonInteractive()
+          ? (process.env.NEMOCLAW_ENDPOINT_URL || "").trim()
+          : await prompt("  NVIDIA Cloud Partner endpoint URL (e.g., https://partner.api.nvidia.com/v1): ");
+        if (!endpointUrl) {
+          console.error("  Endpoint URL is required for NVIDIA Cloud Partner.");
+          process.exit(1);
+        }
+      }
+
+      if (selected.key === "build") {
+        if (isNonInteractive()) {
+          if (!process.env.NVIDIA_API_KEY) {
+            console.error("  NVIDIA_API_KEY is required for NVIDIA hosted in non-interactive mode.");
+            process.exit(1);
+          }
+        } else {
+          await ensureApiKey();
+        }
+        model = requestedModel || (isNonInteractive() ? DEFAULT_CLOUD_MODEL : await promptCloudModel()) || DEFAULT_CLOUD_MODEL;
+      } else {
+        if (isNonInteractive()) {
+          if (!process.env[credentialEnv]) {
+            console.error(`  ${credentialEnv} is required for ${remoteConfig.label} in non-interactive mode.`);
+            process.exit(1);
+          }
+        } else {
+          await ensureNamedCredential(credentialEnv, remoteConfig.label + " API key", remoteConfig.helpUrl);
+        }
+        const defaultModel = requestedModel || remoteConfig.defaultModel;
+        model = isNonInteractive()
+          ? defaultModel
+          : await prompt(`  ${remoteConfig.label} model [${defaultModel}]: `) || defaultModel;
+      }
+      console.log(`  Using ${remoteConfig.label} with model: ${model}`);
+    } else if (selected.key === "nim-local") {
       // List models that fit GPU VRAM
       const models = nim.listModels().filter((m) => m.minGpuMemoryMB <= gpu.totalMemoryMB);
       if (models.length === 0) {
@@ -842,6 +1002,8 @@ async function setupNim(sandboxName, gpu) {
           nimContainer = null;
         } else {
           provider = "vllm-local";
+          credentialEnv = "OPENAI_API_KEY";
+          endpointUrl = getLocalProviderBaseUrl(provider);
         }
       }
     } else if (selected.key === "ollama") {
@@ -852,6 +1014,8 @@ async function setupNim(sandboxName, gpu) {
       }
       console.log("  ✓ Using Ollama on localhost:11434");
       provider = "ollama-local";
+      credentialEnv = "OPENAI_API_KEY";
+      endpointUrl = getLocalProviderBaseUrl(provider);
       if (isNonInteractive()) {
         model = requestedModel || getDefaultOllamaModel(runCapture);
       } else {
@@ -865,6 +1029,8 @@ async function setupNim(sandboxName, gpu) {
         sleep(2);
       console.log("  ✓ Using Ollama on localhost:11434");
       provider = "ollama-local";
+      credentialEnv = "OPENAI_API_KEY";
+      endpointUrl = getLocalProviderBaseUrl(provider);
       if (isNonInteractive()) {
         model = requestedModel || getDefaultOllamaModel(runCapture);
       } else {
@@ -873,6 +1039,8 @@ async function setupNim(sandboxName, gpu) {
     } else if (selected.key === "vllm") {
       console.log("  ✓ Using existing vLLM on localhost:8000");
       provider = "vllm-local";
+      credentialEnv = "OPENAI_API_KEY";
+      endpointUrl = getLocalProviderBaseUrl(provider);
       // Query vLLM for the actual model ID
       const vllmModelsRaw = runCapture("curl -sf http://localhost:8000/v1/models 2>/dev/null", { ignoreError: true });
       try {
@@ -893,42 +1061,34 @@ async function setupNim(sandboxName, gpu) {
         process.exit(1);
       }
     }
-    // else: cloud — fall through to default below
-  }
-
-  if (provider === "nvidia-nim") {
-    if (isNonInteractive()) {
-      // In non-interactive mode, NVIDIA_API_KEY must be set via env var
-      if (!process.env.NVIDIA_API_KEY) {
-        console.error("  NVIDIA_API_KEY is required for cloud provider in non-interactive mode.");
-        console.error("  Set it via: NVIDIA_API_KEY=nvapi-... nemoclaw onboard --non-interactive");
-        process.exit(1);
-      }
-    } else {
-      await ensureApiKey();
-      model = model || (await promptCloudModel()) || DEFAULT_CLOUD_MODEL;
-    }
-    model = model || requestedModel || DEFAULT_CLOUD_MODEL;
-    console.log(`  Using NVIDIA Endpoint API with model: ${model}`);
   }
 
   if (nimContainer) {
     registry.updateSandbox(sandboxName, { nimContainer });
   }
 
-  return { model, provider };
+  return { model, provider, endpointUrl, credentialEnv };
 }
 
 // ── Step 5: Inference provider ───────────────────────────────────
 
-async function setupInference(sandboxName, model, provider) {
+async function setupInference(sandboxName, model, provider, endpointUrl = null, credentialEnv = null) {
   step(5, 7, "Setting up inference provider");
 
-  if (provider === "nvidia-nim") {
-    upsertProvider("nvidia-nim", "openai", "NVIDIA_API_KEY", "https://integrate.api.nvidia.com/v1", {
-      NVIDIA_API_KEY: process.env.NVIDIA_API_KEY,
-    });
-    runOpenshell(["inference", "set", "--no-verify", "--provider", "nvidia-nim", "--model", model]);
+  if (provider === "nvidia-prod" || provider === "nvidia-nim" || provider === "openai-api" || provider === "anthropic-prod" || provider === "gemini-api" || provider === "compatible-endpoint" || provider === "nvidia-ncp") {
+    const config = provider === "nvidia-nim"
+      ? REMOTE_PROVIDER_CONFIG.build
+      : Object.values(REMOTE_PROVIDER_CONFIG).find((entry) => entry.providerName === provider);
+    const resolvedCredentialEnv = credentialEnv || (config && config.credentialEnv);
+    const resolvedEndpointUrl = endpointUrl || (config && config.endpointUrl);
+    const env = resolvedCredentialEnv ? { [resolvedCredentialEnv]: process.env[resolvedCredentialEnv] } : {};
+    upsertProvider(provider, config.providerType, resolvedCredentialEnv, resolvedEndpointUrl, env);
+    const args = ["inference", "set"];
+    if (config.skipVerify) {
+      args.push("--no-verify");
+    }
+    args.push("--provider", provider, "--model", model);
+    runOpenshell(args);
   } else if (provider === "vllm-local") {
     const validation = validateLocalProvider(provider, runCapture);
     if (!validation.ok) {
@@ -1110,7 +1270,12 @@ function printDashboard(sandboxName, model, provider) {
   const nimLabel = nimStat.running ? "running" : "not running";
 
   let providerLabel = provider;
-  if (provider === "nvidia-nim") providerLabel = "NVIDIA Endpoint API";
+  if (provider === "nvidia-prod" || provider === "nvidia-nim") providerLabel = "NVIDIA hosted";
+  else if (provider === "openai-api") providerLabel = "OpenAI";
+  else if (provider === "anthropic-prod") providerLabel = "Anthropic";
+  else if (provider === "gemini-api") providerLabel = "Google Gemini";
+  else if (provider === "compatible-endpoint") providerLabel = "Other OpenAI-compatible endpoint";
+  else if (provider === "nvidia-ncp") providerLabel = "NVIDIA Cloud Partner";
   else if (provider === "vllm-local") providerLabel = "Local vLLM";
   else if (provider === "ollama-local") providerLabel = "Local Ollama";
 
@@ -1143,8 +1308,8 @@ async function onboard(opts = {}) {
   process.env.NEMOCLAW_OPENSHELL_BIN = getOpenshellBinary();
   await startGateway(gpu);
   const sandboxName = await createSandbox(gpu);
-  const { model, provider } = await setupNim(sandboxName, gpu);
-  await setupInference(sandboxName, model, provider);
+  const { model, provider, endpointUrl, credentialEnv } = await setupNim(sandboxName, gpu);
+  await setupInference(sandboxName, model, provider, endpointUrl, credentialEnv);
   await setupOpenclaw(sandboxName, model, provider);
   await setupPolicies(sandboxName);
   printDashboard(sandboxName, model, provider);

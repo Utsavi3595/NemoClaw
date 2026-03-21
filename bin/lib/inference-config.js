@@ -18,6 +18,7 @@ const { DEFAULT_OLLAMA_MODEL } = require("./local-inference");
 
 function getProviderSelectionConfig(provider, model) {
   switch (provider) {
+    case "nvidia-prod":
     case "nvidia-nim":
       return {
         endpointType: "custom",
@@ -27,7 +28,62 @@ function getProviderSelectionConfig(provider, model) {
         profile: DEFAULT_ROUTE_PROFILE,
         credentialEnv: DEFAULT_ROUTE_CREDENTIAL_ENV,
         provider,
-        providerLabel: "NVIDIA Endpoint API",
+        providerLabel: "NVIDIA hosted",
+      };
+    case "openai-api":
+      return {
+        endpointType: "custom",
+        endpointUrl: INFERENCE_ROUTE_URL,
+        ncpPartner: null,
+        model: model || "gpt-5.4",
+        profile: DEFAULT_ROUTE_PROFILE,
+        credentialEnv: DEFAULT_ROUTE_CREDENTIAL_ENV,
+        provider,
+        providerLabel: "OpenAI",
+      };
+    case "anthropic-prod":
+      return {
+        endpointType: "custom",
+        endpointUrl: INFERENCE_ROUTE_URL,
+        ncpPartner: null,
+        model: model || "claude-sonnet-4-5",
+        profile: DEFAULT_ROUTE_PROFILE,
+        credentialEnv: DEFAULT_ROUTE_CREDENTIAL_ENV,
+        provider,
+        providerLabel: "Anthropic",
+      };
+    case "gemini-api":
+      return {
+        endpointType: "custom",
+        endpointUrl: INFERENCE_ROUTE_URL,
+        ncpPartner: null,
+        model: model || "gemini-3-flash-preview",
+        profile: DEFAULT_ROUTE_PROFILE,
+        credentialEnv: DEFAULT_ROUTE_CREDENTIAL_ENV,
+        provider,
+        providerLabel: "Google Gemini",
+      };
+    case "compatible-endpoint":
+      return {
+        endpointType: "custom",
+        endpointUrl: INFERENCE_ROUTE_URL,
+        ncpPartner: null,
+        model: model || "custom-model",
+        profile: DEFAULT_ROUTE_PROFILE,
+        credentialEnv: DEFAULT_ROUTE_CREDENTIAL_ENV,
+        provider,
+        providerLabel: "Other OpenAI-compatible endpoint",
+      };
+    case "nvidia-ncp":
+      return {
+        endpointType: "custom",
+        endpointUrl: INFERENCE_ROUTE_URL,
+        ncpPartner: null,
+        model: model || DEFAULT_CLOUD_MODEL,
+        profile: DEFAULT_ROUTE_PROFILE,
+        credentialEnv: DEFAULT_ROUTE_CREDENTIAL_ENV,
+        provider,
+        providerLabel: "NVIDIA Cloud Partner",
       };
     case "vllm-local":
       return {
