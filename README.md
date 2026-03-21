@@ -222,7 +222,7 @@ NemoClaw includes preset policy files for common integrations such as PyPI, Dock
 
 When the agent attempts to reach an endpoint not covered by the policy, OpenShell blocks the request and surfaces it in the TUI (`openshell term`) for the operator to approve or deny in real time. Approved endpoints persist for the current session only.
 
-For step-by-step instructions, see [Customize Network Policy](https://docs.nvidia.com/nemoclaw/latest/network-policy/customize-network-policy.html). For the underlying enforcement details, see the OpenShell [Policy Schema](https://github.com/NVIDIA/OpenShell/blob/main/docs/reference/policy-schema.md) and [Sandbox Policies](https://github.com/NVIDIA/OpenShell/blob/main/docs/sandboxes/policies.md) documentation.
+For step-by-step instructions, see [Customize Network Policy](https://docs.nvidia.com/nemoclaw/latest/network-policy/customize-network-policy.html). For the underlying enforcement details, see the OpenShell [Policy Schema](https://docs.nvidia.com/openshell/latest/reference/policy-schema.html) and [Sandbox Policies](https://docs.nvidia.com/openshell/latest/sandboxes/policies.html) documentation.
 
 ---
 
