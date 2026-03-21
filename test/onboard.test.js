@@ -210,49 +210,6 @@ const { setupInference } = require(${onboardPath});
     assert.match(commands[2].command, /'--provider' 'anthropic-prod'/);
   });
 
-  it("targets the selected gateway name explicitly for gateway-scoped openshell commands", () => {
-    const repoRoot = path.join(__dirname, "..");
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-gateway-"));
-    const fakeBin = path.join(tmpDir, "bin");
-    const scriptPath = path.join(tmpDir, "gateway-check.js");
-    const runnerPath = JSON.stringify(path.join(repoRoot, "bin", "lib", "runner.js"));
-    const onboardPath = JSON.stringify(path.join(repoRoot, "bin", "lib", "onboard.js"));
-
-    fs.mkdirSync(fakeBin, { recursive: true });
-    fs.writeFileSync(path.join(fakeBin, "openshell"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
-
-const script = String.raw`
-const runner = require(${runnerPath});
-const commands = [];
-runner.runCapture = (command) => {
-  commands.push(command);
-  return "";
-};
-process.env.OPENSHELL_GATEWAY = "nemoclaw";
-const { runCaptureOpenshell } = require(${onboardPath});
-runCaptureOpenshell(["provider", "list"], { ignoreError: true });
-runCaptureOpenshell(["--version"], { ignoreError: true });
-console.log(JSON.stringify(commands));
-`;
-    fs.writeFileSync(scriptPath, script);
-
-    const result = spawnSync(process.execPath, [scriptPath], {
-      cwd: repoRoot,
-      encoding: "utf-8",
-      env: {
-        ...process.env,
-        HOME: tmpDir,
-        PATH: `${fakeBin}:${process.env.PATH || ""}`,
-      },
-    });
-
-    assert.equal(result.status, 0, result.stderr);
-    const commands = JSON.parse(result.stdout.trim());
-    assert.match(commands[0], /'-g' 'nemoclaw' 'provider' 'list'/);
-    assert.match(commands[1], /'--version'/);
-    assert.doesNotMatch(commands[1], /'-g' 'nemoclaw'/);
-  });
-
   it("updates OpenAI-compatible providers without passing an unsupported --type flag", () => {
     const repoRoot = path.join(__dirname, "..");
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-openai-update-"));

@@ -267,31 +267,12 @@ function openshellShellCommand(args) {
   return [shellQuote(getOpenshellBinary()), ...args.map((arg) => shellQuote(arg))].join(" ");
 }
 
-function withGatewayArgs(args) {
-  if (
-    args.includes("-g") ||
-    args.includes("--gateway") ||
-    args[0] === "gateway" ||
-    args[0] === "--version" ||
-    args[0] === "-V" ||
-    args[0] === "--help" ||
-    args[0] === "-h"
-  ) {
-    return args;
-  }
-  const gatewayName = process.env.OPENSHELL_GATEWAY;
-  if (!gatewayName) {
-    return args;
-  }
-  return ["-g", gatewayName, ...args];
-}
-
 function runOpenshell(args, opts = {}) {
-  return run(openshellShellCommand(withGatewayArgs(args)), opts);
+  return run(openshellShellCommand(args), opts);
 }
 
 function runCaptureOpenshell(args, opts = {}) {
-  return runCapture(openshellShellCommand(withGatewayArgs(args)), opts);
+  return runCapture(openshellShellCommand(args), opts);
 }
 
 function formatEnvAssignment(name, value) {
