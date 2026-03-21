@@ -282,7 +282,7 @@ function buildProviderArgs(action, name, type, credentialEnv, baseUrl) {
   const args =
     action === "create"
       ? ["provider", "create", "--name", name, "--type", type, "--credential", credentialEnv]
-      : ["provider", "update", name, "--type", type, "--credential", credentialEnv];
+      : ["provider", "update", name, "--credential", credentialEnv];
   if (baseUrl && type === "openai") {
     args.push("--config", `OPENAI_BASE_URL=${baseUrl}`);
   }
@@ -1298,6 +1298,7 @@ function printDashboard(sandboxName, model, provider) {
 
 async function onboard(opts = {}) {
   NON_INTERACTIVE = opts.nonInteractive || process.env.NEMOCLAW_NON_INTERACTIVE === "1";
+  process.env.OPENSHELL_GATEWAY = "nemoclaw";
 
   console.log("");
   console.log("  NemoClaw Onboarding");
