@@ -206,7 +206,7 @@ const { setupInference } = require(${onboardPath});
     assert.match(commands[1].command, /'--provider' 'anthropic-prod'/);
   });
 
-  it("targets the nemoclaw gateway explicitly for gateway-scoped openshell commands", () => {
+  it("targets the active gateway endpoint explicitly for gateway-scoped openshell commands", () => {
     const repoRoot = path.join(__dirname, "..");
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-gateway-"));
     const fakeBin = path.join(tmpDir, "bin");
@@ -217,13 +217,14 @@ const { setupInference } = require(${onboardPath});
     fs.mkdirSync(fakeBin, { recursive: true });
     fs.writeFileSync(path.join(fakeBin, "openshell"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
 
-    const script = String.raw`
+const script = String.raw`
 const runner = require(${runnerPath});
 const commands = [];
 runner.runCapture = (command) => {
   commands.push(command);
   return "";
 };
+process.env.OPENSHELL_GATEWAY_ENDPOINT = "https://127.0.0.1:8080";
 const { runCaptureOpenshell } = require(${onboardPath});
 runCaptureOpenshell(["provider", "list"], { ignoreError: true });
 runCaptureOpenshell(["--version"], { ignoreError: true });
@@ -243,9 +244,9 @@ console.log(JSON.stringify(commands));
 
     assert.equal(result.status, 0, result.stderr);
     const commands = JSON.parse(result.stdout.trim());
-    assert.match(commands[0], /'-g' 'nemoclaw' 'provider' 'list'/);
+    assert.match(commands[0], /'--gateway-endpoint' 'https:\/\/127\.0\.0\.1:8080' 'provider' 'list'/);
     assert.match(commands[1], /'--version'/);
-    assert.doesNotMatch(commands[1], /'-g' 'nemoclaw'/);
+    assert.doesNotMatch(commands[1], /'--gateway-endpoint'/);
   });
 
   it("updates OpenAI-compatible providers without passing an unsupported --type flag", () => {

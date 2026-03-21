@@ -39,6 +39,8 @@ const USE_COLOR = !process.env.NO_COLOR && !!process.stdout.isTTY;
 const DIM = USE_COLOR ? "\x1b[2m" : "";
 const RESET = USE_COLOR ? "\x1b[0m" : "";
 let OPENSHELL_BIN = null;
+const GATEWAY_NAME = "nemoclaw";
+const GATEWAY_ENDPOINT = "https://127.0.0.1:8080";
 
 const BUILD_ENDPOINT_URL = "https://integrate.api.nvidia.com/v1";
 const OPENAI_ENDPOINT_URL = "https://api.openai.com/v1";
@@ -157,7 +159,7 @@ function isSandboxReady(output, sandboxName) {
  * @returns {boolean}
  */
 function hasStaleGateway(gwInfoOutput) {
-  return typeof gwInfoOutput === "string" && gwInfoOutput.length > 0 && gwInfoOutput.includes("nemoclaw");
+  return typeof gwInfoOutput === "string" && gwInfoOutput.length > 0 && gwInfoOutput.includes(GATEWAY_NAME);
 }
 
 function streamSandboxCreate(command) {
@@ -268,8 +270,7 @@ function openshellShellCommand(args) {
 
 function withGatewayArgs(args) {
   if (
-    args.includes("-g") ||
-    args.includes("--gateway") ||
+    args[0] === "gateway" ||
     args.includes("--gateway-endpoint") ||
     args[0] === "--version" ||
     args[0] === "-V" ||
@@ -278,7 +279,11 @@ function withGatewayArgs(args) {
   ) {
     return args;
   }
-  return ["-g", "nemoclaw", ...args];
+  const gatewayEndpoint = process.env.OPENSHELL_GATEWAY_ENDPOINT;
+  if (!gatewayEndpoint) {
+    return args;
+  }
+  return ["--gateway-endpoint", gatewayEndpoint, ...args];
 }
 
 function runOpenshell(args, opts = {}) {
@@ -574,11 +579,11 @@ async function preflight() {
   // A previous onboard run may have left the gateway container and port
   // forward running.  If a NemoClaw-owned gateway is still present, tear
   // it down so the port check below doesn't fail on our own leftovers.
-  const gwInfo = runCaptureOpenshell(["gateway", "info", "-g", "nemoclaw"], { ignoreError: true });
+  const gwInfo = runCaptureOpenshell(["gateway", "info", "-g", GATEWAY_NAME], { ignoreError: true });
   if (hasStaleGateway(gwInfo)) {
     console.log("  Cleaning up previous NemoClaw session...");
     runOpenshell(["forward", "stop", "18789"], { ignoreError: true });
-    runOpenshell(["gateway", "destroy", "-g", "nemoclaw"], { ignoreError: true });
+    runOpenshell(["gateway", "destroy", "-g", GATEWAY_NAME], { ignoreError: true });
     console.log("  ✓ Previous session cleaned up");
   }
 
@@ -637,9 +642,9 @@ async function startGateway(gpu) {
   step(2, 7, "Starting OpenShell gateway");
 
   // Destroy old gateway
-  runOpenshell(["gateway", "destroy", "-g", "nemoclaw"], { ignoreError: true });
+  runOpenshell(["gateway", "destroy", "-g", GATEWAY_NAME], { ignoreError: true });
 
-  const gwArgs = ["--name", "nemoclaw"];
+  const gwArgs = ["--name", GATEWAY_NAME];
   // Do NOT pass --gpu here. On DGX Spark (and most GPU hosts), inference is
   // routed through a host-side provider (Ollama, vLLM, or cloud API) — the
   // sandbox itself does not need direct GPU access. Passing --gpu causes
@@ -676,10 +681,11 @@ async function startGateway(gpu) {
   const runtime = getContainerRuntime();
   if (shouldPatchCoredns(runtime)) {
     console.log("  Patching CoreDNS for Colima...");
-    run(`bash "${path.join(SCRIPTS, "fix-coredns.sh")}" nemoclaw 2>&1 || true`, { ignoreError: true });
+    run(`bash "${path.join(SCRIPTS, "fix-coredns.sh")}" ${GATEWAY_NAME} 2>&1 || true`, { ignoreError: true });
   }
   // Give DNS a moment to propagate
   sleep(5);
+  process.env.OPENSHELL_GATEWAY_ENDPOINT = GATEWAY_ENDPOINT;
 }
 
 // ── Step 3: Sandbox ──────────────────────────────────────────────
@@ -1313,7 +1319,8 @@ function printDashboard(sandboxName, model, provider) {
 
 async function onboard(opts = {}) {
   NON_INTERACTIVE = opts.nonInteractive || process.env.NEMOCLAW_NON_INTERACTIVE === "1";
-  process.env.OPENSHELL_GATEWAY = "nemoclaw";
+  delete process.env.OPENSHELL_GATEWAY;
+  delete process.env.OPENSHELL_GATEWAY_ENDPOINT;
 
   console.log("");
   console.log("  NemoClaw Onboarding");
