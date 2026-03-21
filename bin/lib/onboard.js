@@ -305,11 +305,12 @@ function upsertProvider(name, type, credentialEnv, baseUrl, env = {}) {
 
 function verifyInferenceRoute(provider, model) {
   const output = runCaptureOpenshell(["inference", "get"], { ignoreError: true });
-  if (!output || output.includes("Not configured")) {
+  const gatewaySection = output ? output.split(/\nSystem inference:/m)[0] : "";
+  if (!output || /Gateway inference:\s*[\r\n]+\s*Not configured/i.test(gatewaySection)) {
     console.error("  OpenShell inference route was not configured.");
     process.exit(1);
   }
-  if (!output.includes(`Provider: ${provider}`) || !output.includes(`Model: ${model}`)) {
+  if (!gatewaySection.includes(`Provider: ${provider}`) || !gatewaySection.includes(`Model: ${model}`)) {
     console.error("  OpenShell inference route does not match the requested provider/model.");
     console.error(`  Expected provider: ${provider}`);
     console.error(`  Expected model: ${model}`);
