@@ -32,7 +32,7 @@ const { prompt, ensureApiKey, getCredential } = require("./credentials");
 const registry = require("./registry");
 const nim = require("./nim");
 const policies = require("./policies");
-const { checkPortAvailable } = require("./preflight");
+const { checkPortAvailable, checkCgroupConfig } = require("./preflight");
 const EXPERIMENTAL = process.env.NEMOCLAW_EXPERIMENTAL === "1";
 const USE_COLOR = !process.env.NO_COLOR && !!process.stdout.isTTY;
 const DIM = USE_COLOR ? "\x1b[2m" : "";
@@ -342,6 +342,24 @@ async function preflight() {
   if (runtime !== "unknown") {
     console.log(`  ✓ Container runtime: ${runtime}`);
   }
+
+  // Cgroup v2 — must be configured for cgroupns=host
+  const cgroup = checkCgroupConfig({ runtime });
+  if (!cgroup.ok) {
+    console.error("");
+    console.error("  !! cgroup v2 detected but Docker is not configured for cgroupns=host.");
+    console.error("     OpenShell's gateway runs k3s inside Docker, which will fail with:");
+    console.error("");
+    console.error("       openat2 /sys/fs/cgroup/kubepods/pids.max: no such file or directory");
+    console.error("");
+    console.error("     To fix:");
+    console.error("");
+    console.error(`       ${cgroup.fix}`);
+    console.error("");
+    console.error(`     Detail: ${cgroup.reason}`);
+    process.exit(1);
+  }
+  console.log("  ✓ cgroup configuration OK");
 
   // OpenShell CLI
   if (!isOpenshellInstalled()) {

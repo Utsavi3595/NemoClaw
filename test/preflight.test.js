@@ -5,7 +5,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 
 const net = require("net");
-const { checkPortAvailable } = require("../bin/lib/preflight");
+const { checkPortAvailable, isCgroupV2, readDaemonJson, checkCgroupConfig } = require("../bin/lib/preflight");
 
 describe("checkPortAvailable", () => {
   it("falls through to net probe when lsof output is empty", async () => {
@@ -121,5 +121,129 @@ describe("checkPortAvailable", () => {
     // Verify the function works with any port (including 8080-range)
     const result = await checkPortAvailable(freePort);
     assert.equal(result.ok, true);
+  });
+});
+
+describe("isCgroupV2", () => {
+  it("returns true when stat output is cgroup2fs (Linux)", () => {
+    const result = isCgroupV2({ platform: "linux", statOutput: "cgroup2fs\n" });
+    assert.equal(result, true);
+  });
+
+  it("returns false when stat output is tmpfs (Linux, cgroup v1)", () => {
+    const result = isCgroupV2({ platform: "linux", statOutput: "tmpfs\n" });
+    assert.equal(result, false);
+  });
+
+  it("returns false when stat fails (empty output)", () => {
+    const result = isCgroupV2({ platform: "linux", statOutput: "" });
+    assert.equal(result, false);
+  });
+
+  it("returns true when docker info shows Cgroup Version: 2 (macOS)", () => {
+    const dockerInfo = [
+      "Client:",
+      " Version: 24.0.7",
+      "Server:",
+      " Cgroup Driver: systemd",
+      " Cgroup Version: 2",
+    ].join("\n");
+    const result = isCgroupV2({ platform: "darwin", dockerInfoOutput: dockerInfo });
+    assert.equal(result, true);
+  });
+
+  it("returns false when docker info shows Cgroup Version: 1 (macOS)", () => {
+    const dockerInfo = [
+      "Client:",
+      " Version: 24.0.7",
+      "Server:",
+      " Cgroup Driver: cgroupfs",
+      " Cgroup Version: 1",
+    ].join("\n");
+    const result = isCgroupV2({ platform: "darwin", dockerInfoOutput: dockerInfo });
+    assert.equal(result, false);
+  });
+});
+
+describe("readDaemonJson", () => {
+  it("parses valid JSON content", () => {
+    const content = JSON.stringify({ "default-cgroupns-mode": "host", "storage-driver": "overlay2" });
+    const result = readDaemonJson({ daemonJsonContent: content });
+    assert.deepEqual(result, { "default-cgroupns-mode": "host", "storage-driver": "overlay2" });
+  });
+
+  it("returns null for invalid JSON", () => {
+    const result = readDaemonJson({ daemonJsonContent: "not json {{{" });
+    assert.equal(result, null);
+  });
+
+  it("returns null when no content provided and no file exists", () => {
+    // Use a platform where the daemon.json path won't exist
+    const result = readDaemonJson({ platform: "linux" });
+    // On CI/dev machines /etc/docker/daemon.json may or may not exist,
+    // but we can at least verify the return type is object or null.
+    assert.ok(result === null || typeof result === "object");
+  });
+});
+
+describe("checkCgroupConfig", () => {
+  it("returns ok when cgroup v1 (not v2)", () => {
+    const result = checkCgroupConfig({ cgroupV2: false });
+    assert.deepEqual(result, { ok: true });
+  });
+
+  it("returns ok when cgroup v2 + cgroupns=host configured", () => {
+    const result = checkCgroupConfig({
+      cgroupV2: true,
+      daemonConfig: { "default-cgroupns-mode": "host" },
+    });
+    assert.deepEqual(result, { ok: true });
+  });
+
+  it("returns not ok on Linux with no daemon.json, fix suggests setup-spark", () => {
+    const result = checkCgroupConfig({
+      platform: "linux",
+      runtime: "docker",
+      cgroupV2: true,
+      daemonConfig: null,
+    });
+    assert.equal(result.ok, false);
+    assert.ok(result.fix.includes("setup-spark"));
+    assert.ok(result.reason.includes("does not exist"));
+  });
+
+  it("returns not ok on Docker Desktop, fix suggests Docker Desktop settings", () => {
+    const result = checkCgroupConfig({
+      platform: "darwin",
+      runtime: "docker-desktop",
+      cgroupV2: true,
+      daemonConfig: null,
+    });
+    assert.equal(result.ok, false);
+    assert.ok(result.fix.includes("Docker Desktop"));
+    assert.ok(result.reason.includes("daemon.json"));
+  });
+
+  it("returns not ok on Colima, fix suggests colima restart with flag", () => {
+    const result = checkCgroupConfig({
+      platform: "darwin",
+      runtime: "colima",
+      cgroupV2: true,
+      daemonConfig: null,
+    });
+    assert.equal(result.ok, false);
+    assert.ok(result.fix.includes("colima stop"));
+    assert.ok(result.fix.includes("--cgroupns-mode host"));
+    assert.ok(result.reason.includes("Colima"));
+  });
+
+  it("returns ok when cgroup v2 + Colima + daemonConfig has host mode", () => {
+    const result = checkCgroupConfig({
+      platform: "darwin",
+      runtime: "colima",
+      cgroupV2: true,
+      daemonConfig: { "default-cgroupns-mode": "host" },
+    });
+    assert.deepEqual(result, { ok: true });
   });
 });
