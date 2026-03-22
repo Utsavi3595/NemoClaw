@@ -85,6 +85,16 @@ describe("policies", () => {
       const nameIdx = cmd.indexOf("'test-box'");
       expect(waitIdx < nameIdx).toBeTruthy();
     });
+
+    it("uses the resolved openshell binary when provided by the installer path", () => {
+      process.env.NEMOCLAW_OPENSHELL_BIN = "/tmp/fake path/openshell";
+      try {
+        const cmd = policies.buildPolicySetCommand("/tmp/policy.yaml", "my-assistant");
+        assert.equal(cmd, '\'/tmp/fake path/openshell\' policy set --policy "/tmp/policy.yaml" --wait "my-assistant"');
+      } finally {
+        delete process.env.NEMOCLAW_OPENSHELL_BIN;
+      }
+    });
   });
 
   describe("buildPolicyGetCommand", () => {

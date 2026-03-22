@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, it, expect } from "vitest";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { describe, expect, it } from "vitest";
 
 import {
   buildSandboxConfigSyncScript,
@@ -26,16 +27,11 @@ describe("onboard helpers", () => {
       onboardedAt: "2026-03-18T12:00:00.000Z",
     });
 
-    // Writes NemoClaw selection config to writable ~/.nemoclaw/
     expect(script).toMatch(/cat > ~\/\.nemoclaw\/config\.json/);
     expect(script).toMatch(/"model": "nemotron-3-nano:30b"/);
     expect(script).toMatch(/"credentialEnv": "OPENAI_API_KEY"/);
-
-    // Must NOT modify openclaw config from inside the sandbox — model routing
-    // is handled by the host-side gateway (openshell inference set)
     expect(script).not.toMatch(/openclaw\.json/);
     expect(script).not.toMatch(/openclaw models set/);
-
     expect(script).toMatch(/^exit$/m);
   });
 
@@ -69,5 +65,74 @@ describe("onboard helpers", () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it("passes credential names to openshell without embedding secret values in argv", () => {
+    const repoRoot = path.join(__dirname, "..");
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-inference-"));
+    const fakeBin = path.join(tmpDir, "bin");
+    const scriptPath = path.join(tmpDir, "setup-inference-check.js");
+    const onboardPath = JSON.stringify(path.join(repoRoot, "bin", "lib", "onboard.js"));
+    const runnerPath = JSON.stringify(path.join(repoRoot, "bin", "lib", "runner.js"));
+    const registryPath = JSON.stringify(path.join(repoRoot, "bin", "lib", "registry.js"));
+
+    fs.mkdirSync(fakeBin, { recursive: true });
+    fs.writeFileSync(path.join(fakeBin, "openshell"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+
+    const script = String.raw`
+const runner = require(${runnerPath});
+const registry = require(${registryPath});
+
+const commands = [];
+runner.run = (command, opts = {}) => {
+  commands.push({ command, env: opts.env || null });
+  return { status: 0 };
+};
+runner.runCapture = (command) => {
+  if (command.includes("inference") && command.includes("get")) {
+    return [
+      "Gateway inference:",
+      "",
+      "  Route: inference.local",
+      "  Provider: nvidia-nim",
+      "  Model: nvidia/nemotron-3-super-120b-a12b",
+      "  Version: 1",
+    ].join("\\n");
+  }
+  return "";
+};
+registry.updateSandbox = () => true;
+
+process.env.NVIDIA_API_KEY = "nvapi-secret-value";
+
+const { setupInference } = require(${onboardPath});
+
+(async () => {
+  await setupInference("test-box", "nvidia/nemotron-3-super-120b-a12b", "nvidia-nim");
+  console.log(JSON.stringify(commands));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+`;
+    fs.writeFileSync(scriptPath, script);
+
+    const result = spawnSync(process.execPath, [scriptPath], {
+      cwd: repoRoot,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        HOME: tmpDir,
+        PATH: `${fakeBin}:${process.env.PATH || ""}`,
+      },
+    });
+
+    expect(result.status).toBe(0);
+    const commands = JSON.parse(result.stdout.trim().split("\n").pop());
+    expect(commands).toHaveLength(2);
+    expect(commands[0].command).toMatch(/'--credential' 'NVIDIA_API_KEY'/);
+    expect(commands[0].command).not.toMatch(/nvapi-secret-value/);
+    expect(commands[0].command).toMatch(/provider' 'create'/);
+    expect(commands[1].command).toMatch(/inference' 'set'/);
   });
 });
