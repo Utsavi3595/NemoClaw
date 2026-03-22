@@ -77,7 +77,7 @@ const { setupNim } = require(${onboardPath});
     expect(payload.messages[0]).toMatch(/Choose \[/);
     expect(payload.messages[1]).toMatch(/Choose model \[1\]/);
     expect(payload.lines.some((line) => line.includes("Detected local inference option"))).toBeTruthy();
-    expect(payload.lines.some((line) => line.includes("Press Enter to keep NVIDIA hosted"))).toBeTruthy();
+    expect(payload.lines.some((line) => line.includes("Press Enter to keep NVIDIA Endpoints"))).toBeTruthy();
     expect(payload.lines.some((line) => line.includes("Cloud models:"))).toBeTruthy();
   });
 });

@@ -50,7 +50,7 @@ describe("inference selection config", () => {
       profile: DEFAULT_ROUTE_PROFILE,
       credentialEnv: DEFAULT_ROUTE_CREDENTIAL_ENV,
       provider: "nvidia-nim",
-      providerLabel: "NVIDIA Endpoint API",
+      providerLabel: "NVIDIA Endpoints",
     });
   });
 

@@ -28,7 +28,7 @@ function getProviderSelectionConfig(provider, model) {
         profile: DEFAULT_ROUTE_PROFILE,
         credentialEnv: DEFAULT_ROUTE_CREDENTIAL_ENV,
         provider,
-        providerLabel: "NVIDIA hosted",
+        providerLabel: "NVIDIA Endpoints",
       };
     case "openai-api":
       return {

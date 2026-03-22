@@ -37,16 +37,28 @@ function prompt(question, opts = {}) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
     if (silent) {
       rl.stdoutMuted = true;
+      process.stderr.write(question);
       rl._writeToOutput = function _writeToOutput(stringToWrite) {
-        if (!this.stdoutMuted) {
+        if (!this.stdoutMuted && stringToWrite !== question) {
           this.output.write(stringToWrite);
         }
       };
+      rl.question("", (answer) => {
+        process.stderr.write("\n");
+        rl.close();
+        if (!process.stdin.isTTY) {
+          if (typeof process.stdin.pause === "function") {
+            process.stdin.pause();
+          }
+          if (typeof process.stdin.unref === "function") {
+            process.stdin.unref();
+          }
+        }
+        resolve(answer.trim());
+      });
+      return;
     }
     rl.question(question, (answer) => {
-      if (silent) {
-        process.stderr.write("\n");
-      }
       rl.close();
       if (!process.stdin.isTTY) {
         if (typeof process.stdin.pause === "function") {

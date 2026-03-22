@@ -48,7 +48,7 @@ const GEMINI_ENDPOINT_URL = "https://generativelanguage.googleapis.com/v1beta/op
 
 const REMOTE_PROVIDER_CONFIG = {
   build: {
-    label: "NVIDIA hosted",
+    label: "NVIDIA Endpoints",
     providerName: "nvidia-prod",
     providerType: "nvidia",
     credentialEnv: "NVIDIA_API_KEY",
@@ -853,7 +853,7 @@ async function setupNim(sandboxName, gpu) {
   options.push({
     key: "build",
     label:
-      "NVIDIA hosted" +
+      "NVIDIA Endpoints" +
       (!ollamaRunning && !(EXPERIMENTAL && vllmRunning) ? " (recommended)" : ""),
   });
   options.push({ key: "openai", label: "OpenAI" });
@@ -901,7 +901,7 @@ async function setupNim(sandboxName, gpu) {
       if (ollamaRunning) suggestions.push("Ollama");
       if (suggestions.length > 0) {
         console.log(`  Detected local inference option${suggestions.length > 1 ? "s" : ""}: ${suggestions.join(", ")}`);
-        console.log("  Select one explicitly to use it. Press Enter to keep NVIDIA hosted.");
+        console.log("  Select one explicitly to use it. Press Enter to keep NVIDIA Endpoints.");
         console.log("");
       }
 
@@ -945,7 +945,7 @@ async function setupNim(sandboxName, gpu) {
       if (selected.key === "build") {
         if (isNonInteractive()) {
           if (!process.env.NVIDIA_API_KEY) {
-            console.error("  NVIDIA_API_KEY is required for NVIDIA hosted in non-interactive mode.");
+            console.error("  NVIDIA_API_KEY is required for NVIDIA Endpoints in non-interactive mode.");
             process.exit(1);
           }
         } else {
@@ -1304,7 +1304,7 @@ function printDashboard(sandboxName, model, provider) {
   const nimLabel = nimStat.running ? "running" : "not running";
 
   let providerLabel = provider;
-  if (provider === "nvidia-prod" || provider === "nvidia-nim") providerLabel = "NVIDIA hosted";
+  if (provider === "nvidia-prod" || provider === "nvidia-nim") providerLabel = "NVIDIA Endpoints";
   else if (provider === "openai-api") providerLabel = "OpenAI";
   else if (provider === "anthropic-prod") providerLabel = "Anthropic";
   else if (provider === "gemini-api") providerLabel = "Google Gemini";

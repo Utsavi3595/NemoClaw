@@ -45,7 +45,7 @@ export function describeOnboardProvider(config: NemoClawOnboardConfig): string {
 
   switch (config.endpointType) {
     case "build":
-      return "NVIDIA hosted";
+      return "NVIDIA Endpoints";
     case "openai":
       return "OpenAI";
     case "anthropic":
