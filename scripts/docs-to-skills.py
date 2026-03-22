@@ -248,39 +248,120 @@ def clean_myst_directives(text: str) -> str:
         text,
     )
 
+    def _format_admonition(title: str, body: str) -> str:
+        """Format an admonition as a blockquote, stripping directive lines."""
+        lines = [l for l in body.strip().split("\n")
+                 if not re.match(r"^\s*:[a-z_-]+:", l)]
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if not lines:
+            return f"> **{title}**"
+        result = f"> **{title}:** {lines[0].strip()}"
+        for line in lines[1:]:
+            result += f"\n> {line}" if line.strip() else "\n>"
+        return result
+
+    # :::{admonition} with optional :class: etc. — must come before note/tip/warning
+    text = re.sub(
+        r":::\{admonition\}\s*([^\n]*)\n(.*?)\n:::",
+        lambda m: _format_admonition(m.group(1).strip(), m.group(2)),
+        text,
+        flags=re.DOTALL,
+    )
+
     # :::{note} ... ::: -> > **Note:** ...
     text = re.sub(
         r":::\{note\}\s*\n(.*?)\n:::",
-        lambda m: "> **Note:** " + m.group(1).strip(),
+        lambda m: _format_admonition("Note", m.group(1)),
         text,
         flags=re.DOTALL,
     )
     text = re.sub(
         r":::\{tip\}\s*\n(.*?)\n:::",
-        lambda m: "> **Tip:** " + m.group(1).strip(),
+        lambda m: _format_admonition("Tip", m.group(1)),
         text,
         flags=re.DOTALL,
     )
     text = re.sub(
         r":::\{warning\}\s*\n(.*?)\n:::",
-        lambda m: "> **Warning:** " + m.group(1).strip(),
-        text,
-        flags=re.DOTALL,
-    )
-    text = re.sub(
-        r":::\{admonition\}\s*([^\n]*)\n(.*?)\n:::",
-        lambda m: f"> **{m.group(1).strip()}:** {m.group(2).strip()}",
+        lambda m: _format_admonition("Warning", m.group(1)),
         text,
         flags=re.DOTALL,
     )
 
-    # Remove SPDX comment blocks
+    # Remove SPDX and markdownlint comment blocks
     text = re.sub(r"<!--\s*SPDX-.*?-->", "", text, flags=re.DOTALL)
+    text = re.sub(r"<!--\s*markdownlint-.*?-->", "", text, flags=re.DOTALL)
+
+    # Strip "Contents" TOC sections (navigation artifacts, not content)
+    text = re.sub(
+        r"^#{2,3}\s+Contents\s*\n+(?:- [^\n]+\n?)+\n*",
+        "",
+        text,
+        flags=re.MULTILINE,
+    )
 
     # Clean up excessive blank lines
     text = re.sub(r"\n{3,}", "\n\n", text)
 
     return text.strip()
+
+
+def resolve_includes(text: str, source_dir: Path) -> str:
+    """Resolve MyST {include} directives by inlining referenced file content.
+
+    Handles :start-after: and :end-before: markers for partial content
+    extraction. Falls back to a placeholder when the file cannot be read.
+    """
+    pattern = re.compile(
+        r"```\{include\}\s*([^\n]+)\n((?::[^\n]+\n)*)```"
+    )
+
+    def _resolve(match: re.Match) -> str:
+        raw_path = match.group(1).strip()
+        directives = match.group(2)
+
+        start_after = None
+        end_before = None
+        for line in directives.strip().split("\n"):
+            line = line.strip()
+            if line.startswith(":start-after:"):
+                start_after = line[len(":start-after:"):].strip()
+            elif line.startswith(":end-before:"):
+                end_before = line[len(":end-before:"):].strip()
+
+        resolved = (source_dir / raw_path).resolve()
+        if not resolved.is_file():
+            return f"> *Content included from {raw_path} — see the original doc for full text.*"
+
+        try:
+            content = resolved.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return f"> *Content included from {raw_path} — see the original doc for full text.*"
+
+        if start_after:
+            idx = content.find(start_after)
+            if idx != -1:
+                content = content[idx + len(start_after):]
+        if end_before:
+            idx = content.find(end_before)
+            if idx != -1:
+                content = content[:idx]
+
+        return content.strip()
+
+    return pattern.sub(_resolve, text)
+
+
+def resolve_page_includes(pages: list[DocPage]) -> None:
+    """Resolve {include} directives in all pages and re-extract sections."""
+    for page in pages:
+        resolved = resolve_includes(page.body, page.path.parent)
+        if resolved != page.body:
+            page.body = resolved
+            page.sections = _extract_sections(resolved)
 
 
 def rewrite_doc_paths(
@@ -603,29 +684,29 @@ def generate_skill_name(
 def build_skill_description(name: str, pages: list[DocPage], keywords: list[str]) -> str:
     """Build the description field for the skill frontmatter.
 
-    Best-practices compliance:
-    - Uses third-person voice (e.g. "Installs..." not "Install...")
-    - Includes "Use when..." clause instead of flat "Trigger keywords -" list
-    - Keeps description under 1024 characters
+    Uses imperative voice to match skill conventions and appends a
+    "Trigger keywords -" list for discoverability.
     """
     descriptions = [p.description for p in pages if p.description]
     if descriptions:
-        # Convert imperative to third-person: "Install X" -> "Installs X"
-        combined = _to_third_person(descriptions[0])
+        combined = descriptions[0].rstrip(".")
         if len(descriptions) > 1:
-            extras = [_to_third_person(d) for d in descriptions[1:3]]
-            combined += " Also covers " + "; ".join(
-                d[0].lower() + d[1:] for d in extras
-            ) + "."
+            extras = []
+            for d in descriptions[1:3]:
+                clean = d.rstrip(".")
+                if clean:
+                    clean = clean[0].lower() + clean[1:]
+                extras.append(clean)
+            combined += ". Also covers " + "; ".join(extras) + "."
+        else:
+            combined += "."
     else:
         combined = f"Documentation-derived skill for {name.replace('-', ' ')}."
 
-    # Build "Use when..." clause from keywords instead of flat list
     kw_list = keywords[:8]
     if kw_list:
-        combined += " Use when " + ", ".join(kw_list) + "."
+        combined += " Trigger keywords - " + ", ".join(kw_list) + "."
 
-    # Enforce 1024 char limit
     if len(combined) > 1024:
         combined = combined[:1020] + "..."
     return combined
@@ -643,25 +724,28 @@ def _to_third_person(sentence: str) -> str:
         return sentence
     first_word, _, rest = sentence.partition(" ")
     suffix = (" " + rest) if rest else ""
-    # Skip gerunds and words that are already third-person inflections
-    # (e.g. "Provides", "Configures") but NOT base verbs that happen to
-    # end in 's' (e.g. "Access", "Process").  We treat a word as already
-    # inflected only when it ends with a common third-person marker AND
-    # is not a known base-form verb.
+
+    # Strip trailing punctuation so "Add," doesn't become "Add,s"
+    trailing_punct = ""
+    while first_word and first_word[-1] in ".,;:!?":
+        trailing_punct = first_word[-1] + trailing_punct
+        first_word = first_word[:-1]
+    if not first_word:
+        return sentence
+
     _BASE_VERBS_ENDING_IN_S = {
         "access", "process", "address", "discuss", "bypass", "express",
         "compress", "assess", "stress", "progress", "focus", "canvas",
     }
     if first_word.endswith("ing"):
-        return sentence
+        return first_word + trailing_punct + suffix
     if first_word.endswith("s") and first_word.lower() not in _BASE_VERBS_ENDING_IN_S:
-        return sentence
-    # Common imperative verbs: add 's' or 'es'
+        return first_word + trailing_punct + suffix
     if first_word.endswith(("ch", "sh", "x", "ss", "zz")):
-        return first_word + "es" + suffix
+        return first_word + "es" + trailing_punct + suffix
     if first_word.endswith("y") and len(first_word) > 1 and first_word[-2] not in "aeiou":
-        return first_word[:-1] + "ies" + suffix
-    return first_word + "s" + suffix
+        return first_word[:-1] + "ies" + trailing_punct + suffix
+    return first_word + "s" + trailing_punct + suffix
 
 
 # ---------------------------------------------------------------------------
@@ -1032,6 +1116,10 @@ def main():
     print(f"Scanning {args.docs_dir}...")
     pages = scan_docs(args.docs_dir)
     print(f"  Found {len(pages)} documentation pages")
+
+    # Resolve {include} directives so inlined content is available for
+    # section extraction and skill generation
+    resolve_page_includes(pages)
 
     if not pages:
         print("No documentation pages found. Check the docs directory path.")

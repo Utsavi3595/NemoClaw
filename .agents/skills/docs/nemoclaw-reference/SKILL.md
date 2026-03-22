@@ -1,6 +1,6 @@
 ---
 name: nemoclaw-reference
-description: Plugins structure, blueprint lifecycle, sandbox environment, and inference routing. Also covers fulls CLI reference for plugin and standalone NemoClaw commands.; configurations reference for NVIDIA Endpoint inference profiles.. Use when blueprints, cli, inference routing, llms, nemoclaw, nemoclaw architecture, nemoclaw architecture plugin blueprint, nemoclaw cli commands.
+description: Plugin structure, blueprint lifecycle, sandbox environment, and inference routing. Also covers full CLI reference for plugin and standalone NemoClaw commands; configuration reference for NVIDIA Endpoint inference profiles. Trigger keywords - blueprints, cli, inference routing, llms, nemoclaw, nemoclaw architecture, nemoclaw architecture plugin blueprint, nemoclaw cli commands.
 ---
 
 # Nemoclaw Reference

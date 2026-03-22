@@ -1,6 +1,9 @@
 # Overview
 
-> *Content included from `docs/_includes/alpha-statement.md` — see the original doc for full text.*
+> **Alpha software:** NemoClaw is in alpha, available as an early preview since March 16, 2026.
+> APIs, configuration schemas, and runtime behavior are subject to breaking changes between releases.
+> Do not use this software in production environments.
+> File issues and feedback through the GitHub repository as the project continues to stabilize.
 
 NVIDIA NemoClaw is an open source reference stack that simplifies running [OpenClaw](https://openclaw.ai) always-on assistants.
 It incorporates policy-based privacy and security guardrails, giving users control over their agents’ behavior and data handling.
