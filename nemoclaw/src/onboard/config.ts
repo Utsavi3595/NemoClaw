@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const CONFIG_DIR = join(process.env.HOME ?? "/tmp", ".nemoclaw");
+let configDir = join(process.env.HOME ?? tmpdir(), ".nemoclaw");
 
 export type EndpointType =
   | "build"
@@ -70,14 +71,21 @@ let configDirCreated = false;
 
 function ensureConfigDir(): void {
   if (configDirCreated) return;
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
+  if (!existsSync(configDir)) {
+    try {
+      mkdirSync(configDir, { recursive: true });
+    } catch {
+      configDir = join(tmpdir(), ".nemoclaw");
+      if (!existsSync(configDir)) {
+        mkdirSync(configDir, { recursive: true });
+      }
+    }
   }
   configDirCreated = true;
 }
 
 function configPath(): string {
-  return join(CONFIG_DIR, "config.json");
+  return join(configDir, "config.json");
 }
 
 export function loadOnboardConfig(): NemoClawOnboardConfig | null {

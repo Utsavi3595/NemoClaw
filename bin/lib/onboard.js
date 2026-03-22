@@ -275,13 +275,6 @@ function runCaptureOpenshell(args, opts = {}) {
   return runCapture(openshellShellCommand(args), opts);
 }
 
-function getStableGatewayImageRef() {
-  const output = runCaptureOpenshell(["--version"], { ignoreError: true });
-  const match = output.match(/openshell\s+([0-9]+\.[0-9]+\.[0-9]+)/i);
-  if (!match) return null;
-  return `ghcr.io/nvidia/openshell/cluster:${match[1]}`;
-}
-
 function formatEnvAssignment(name, value) {
   return `${name}=${value}`;
 }

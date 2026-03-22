@@ -11,10 +11,6 @@ const registry = require("./registry");
 
 const PRESETS_DIR = path.join(ROOT, "nemoclaw-blueprint", "policies", "presets");
 
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`;
-}
-
 function getOpenshellCommand() {
   const binary = process.env.NEMOCLAW_OPENSHELL_BIN;
   if (!binary) return "openshell";
