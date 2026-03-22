@@ -9,10 +9,13 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const { ROOT, SCRIPTS, run, runCapture, shellQuote } = require("./runner");
 const {
   getDefaultOllamaModel,
+  getBootstrapOllamaModelOptions,
   getLocalProviderBaseUrl,
+  getLocalProviderValidationBaseUrl,
   getOllamaModelOptions,
   getOllamaWarmupCommand,
   validateOllamaModel,
@@ -64,7 +67,7 @@ const REMOTE_PROVIDER_CONFIG = {
     credentialEnv: "OPENAI_API_KEY",
     endpointUrl: OPENAI_ENDPOINT_URL,
     helpUrl: "https://platform.openai.com/api-keys",
-    modelMode: "input",
+    modelMode: "curated",
     defaultModel: "gpt-5.4",
     skipVerify: true,
   },
@@ -75,8 +78,18 @@ const REMOTE_PROVIDER_CONFIG = {
     credentialEnv: "ANTHROPIC_API_KEY",
     endpointUrl: ANTHROPIC_ENDPOINT_URL,
     helpUrl: "https://console.anthropic.com/settings/keys",
+    modelMode: "curated",
+    defaultModel: "claude-sonnet-4-6",
+  },
+  anthropicCompatible: {
+    label: "Other Anthropic-compatible endpoint",
+    providerName: "compatible-anthropic-endpoint",
+    providerType: "anthropic",
+    credentialEnv: "COMPATIBLE_ANTHROPIC_API_KEY",
+    endpointUrl: "",
+    helpUrl: null,
     modelMode: "input",
-    defaultModel: "claude-sonnet-4-5",
+    defaultModel: "",
   },
   gemini: {
     label: "Google Gemini",
@@ -85,8 +98,8 @@ const REMOTE_PROVIDER_CONFIG = {
     credentialEnv: "GEMINI_API_KEY",
     endpointUrl: GEMINI_ENDPOINT_URL,
     helpUrl: "https://aistudio.google.com/app/apikey",
-    modelMode: "input",
-    defaultModel: "gemini-3-flash-preview",
+    modelMode: "curated",
+    defaultModel: "gemini-2.5-flash",
     skipVerify: true,
   },
   custom: {
@@ -100,17 +113,28 @@ const REMOTE_PROVIDER_CONFIG = {
     defaultModel: "",
     skipVerify: true,
   },
-  ncp: {
-    label: "NVIDIA Cloud Partner",
-    providerName: "nvidia-ncp",
-    providerType: "openai",
-    credentialEnv: "NVIDIA_API_KEY",
-    endpointUrl: "",
-    helpUrl: "https://build.nvidia.com/settings/api-keys",
-    modelMode: "catalog",
-    defaultModel: DEFAULT_CLOUD_MODEL,
-    skipVerify: true,
-  },
+};
+
+const REMOTE_MODEL_OPTIONS = {
+  openai: [
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
+    "gpt-5.4-pro-2026-03-05",
+  ],
+  anthropic: [
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+    "claude-opus-4-6",
+  ],
+  gemini: [
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-3-flash-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+  ],
 };
 
 // Non-interactive mode: set by --non-interactive flag or env var.
@@ -286,6 +310,8 @@ function buildProviderArgs(action, name, type, credentialEnv, baseUrl) {
       : ["provider", "update", name, "--credential", credentialEnv];
   if (baseUrl && type === "openai") {
     args.push("--config", `OPENAI_BASE_URL=${baseUrl}`);
+  } else if (baseUrl && type === "anthropic") {
+    args.push("--config", `ANTHROPIC_BASE_URL=${baseUrl}`);
   }
   return args;
 }
@@ -350,34 +376,642 @@ function writeSandboxConfigSyncFile(script, tmpDir = os.tmpdir(), now = Date.now
   return scriptFile;
 }
 
+function encodeDockerJsonArg(value) {
+  return Buffer.from(JSON.stringify(value || {}), "utf8").toString("base64");
+}
+
+function getSandboxInferenceConfig(model, provider = null, preferredInferenceApi = null) {
+  let providerKey = "inference";
+  let primaryModelRef = model;
+  let inferenceBaseUrl = "https://inference.local/v1";
+  let inferenceApi = preferredInferenceApi || "openai-completions";
+  let inferenceCompat = null;
+
+  switch (provider) {
+    case "openai-api":
+      providerKey = "openai";
+      primaryModelRef = `openai/${model}`;
+      break;
+    case "anthropic-prod":
+    case "compatible-anthropic-endpoint":
+      providerKey = "anthropic";
+      primaryModelRef = `anthropic/${model}`;
+      inferenceBaseUrl = "https://inference.local";
+      inferenceApi = "anthropic-messages";
+      break;
+    case "gemini-api":
+      providerKey = "inference";
+      primaryModelRef = `inference/${model}`;
+      inferenceCompat = {
+        supportsStore: false,
+      };
+      break;
+    case "compatible-endpoint":
+      providerKey = "inference";
+      primaryModelRef = `inference/${model}`;
+      inferenceCompat = {
+        supportsStore: false,
+      };
+      break;
+    case "nvidia-prod":
+    case "nvidia-nim":
+    default:
+      providerKey = "inference";
+      primaryModelRef = `inference/${model}`;
+      break;
+  }
+
+  return { providerKey, primaryModelRef, inferenceBaseUrl, inferenceApi, inferenceCompat };
+}
+
+function patchStagedDockerfile(dockerfilePath, model, chatUiUrl, buildId = String(Date.now()), provider = null, preferredInferenceApi = null) {
+  const {
+    providerKey,
+    primaryModelRef,
+    inferenceBaseUrl,
+    inferenceApi,
+    inferenceCompat,
+  } = getSandboxInferenceConfig(model, provider, preferredInferenceApi);
+  let dockerfile = fs.readFileSync(dockerfilePath, "utf8");
+  dockerfile = dockerfile.replace(
+    /^ARG NEMOCLAW_MODEL=.*$/m,
+    `ARG NEMOCLAW_MODEL=${model}`
+  );
+  dockerfile = dockerfile.replace(
+    /^ARG NEMOCLAW_PROVIDER_KEY=.*$/m,
+    `ARG NEMOCLAW_PROVIDER_KEY=${providerKey}`
+  );
+  dockerfile = dockerfile.replace(
+    /^ARG NEMOCLAW_PRIMARY_MODEL_REF=.*$/m,
+    `ARG NEMOCLAW_PRIMARY_MODEL_REF=${primaryModelRef}`
+  );
+  dockerfile = dockerfile.replace(
+    /^ARG CHAT_UI_URL=.*$/m,
+    `ARG CHAT_UI_URL=${chatUiUrl}`
+  );
+  dockerfile = dockerfile.replace(
+    /^ARG NEMOCLAW_INFERENCE_BASE_URL=.*$/m,
+    `ARG NEMOCLAW_INFERENCE_BASE_URL=${inferenceBaseUrl}`
+  );
+  dockerfile = dockerfile.replace(
+    /^ARG NEMOCLAW_INFERENCE_API=.*$/m,
+    `ARG NEMOCLAW_INFERENCE_API=${inferenceApi}`
+  );
+  dockerfile = dockerfile.replace(
+    /^ARG NEMOCLAW_INFERENCE_COMPAT_B64=.*$/m,
+    `ARG NEMOCLAW_INFERENCE_COMPAT_B64=${encodeDockerJsonArg(inferenceCompat)}`
+  );
+  dockerfile = dockerfile.replace(
+    /^ARG NEMOCLAW_BUILD_ID=.*$/m,
+    `ARG NEMOCLAW_BUILD_ID=${buildId}`
+  );
+  fs.writeFileSync(dockerfilePath, dockerfile);
+}
+
+function summarizeProbeError(body, status) {
+  if (!body) return `HTTP ${status} with no response body`;
+  try {
+    const parsed = JSON.parse(body);
+    const message =
+      parsed?.error?.message ||
+      parsed?.error?.details ||
+      parsed?.message ||
+      parsed?.detail ||
+      parsed?.details;
+    if (message) return `HTTP ${status}: ${String(message)}`;
+  } catch {}
+  const compact = String(body).replace(/\s+/g, " ").trim();
+  return `HTTP ${status}: ${compact.slice(0, 200)}`;
+}
+
+function probeOpenAiLikeEndpoint(endpointUrl, model, apiKey) {
+  const probes = [
+    {
+      name: "Responses API",
+      api: "openai-responses",
+      url: `${String(endpointUrl).replace(/\/+$/, "")}/responses`,
+      body: JSON.stringify({
+        model,
+        input: "Reply with exactly: OK",
+      }),
+    },
+    {
+      name: "Chat Completions API",
+      api: "openai-completions",
+      url: `${String(endpointUrl).replace(/\/+$/, "")}/chat/completions`,
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "user", content: "Reply with exactly: OK" },
+        ],
+      }),
+    },
+  ];
+
+  const failures = [];
+  for (const probe of probes) {
+    const bodyFile = path.join(os.tmpdir(), `nemoclaw-probe-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    try {
+      const cmd = [
+        "curl -sS",
+        `-o ${shellQuote(bodyFile)}`,
+        "-w '%{http_code}'",
+        "-H 'Content-Type: application/json'",
+        ...(apiKey ? ['-H "Authorization: Bearer $NEMOCLAW_PROBE_API_KEY"'] : []),
+        `-d ${shellQuote(probe.body)}`,
+        shellQuote(probe.url),
+      ].join(" ");
+      const result = spawnSync("bash", ["-c", cmd], {
+        cwd: ROOT,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          NEMOCLAW_PROBE_API_KEY: apiKey,
+        },
+      });
+      const body = fs.existsSync(bodyFile) ? fs.readFileSync(bodyFile, "utf8") : "";
+      const status = Number(String(result.stdout || "").trim());
+      if (result.status === 0 && status >= 200 && status < 300) {
+        return { ok: true, api: probe.api, label: probe.name };
+      }
+      failures.push({
+        name: probe.name,
+        httpStatus: Number.isFinite(status) ? status : 0,
+        curlStatus: result.status || 0,
+        message: summarizeProbeError(body, status || result.status || 0),
+      });
+    } finally {
+      fs.rmSync(bodyFile, { force: true });
+    }
+  }
+
+  return {
+    ok: false,
+    message: failures.map((failure) => `${failure.name}: ${failure.message}`).join(" | "),
+    failures,
+  };
+}
+
+function probeAnthropicEndpoint(endpointUrl, model, apiKey) {
+  const bodyFile = path.join(os.tmpdir(), `nemoclaw-anthropic-probe-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  try {
+    const cmd = [
+      "curl -sS",
+      `-o ${shellQuote(bodyFile)}`,
+      "-w '%{http_code}'",
+      '-H "x-api-key: $NEMOCLAW_PROBE_API_KEY"',
+      "-H 'anthropic-version: 2023-06-01'",
+      "-H 'content-type: application/json'",
+      `-d ${shellQuote(JSON.stringify({
+        model,
+        max_tokens: 16,
+        messages: [{ role: "user", content: "Reply with exactly: OK" }],
+      }))}`,
+      shellQuote(`${String(endpointUrl).replace(/\/+$/, "")}/v1/messages`),
+    ].join(" ");
+    const result = spawnSync("bash", ["-c", cmd], {
+      cwd: ROOT,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        NEMOCLAW_PROBE_API_KEY: apiKey,
+      },
+    });
+    const body = fs.existsSync(bodyFile) ? fs.readFileSync(bodyFile, "utf8") : "";
+    const status = Number(String(result.stdout || "").trim());
+    if (result.status === 0 && status >= 200 && status < 300) {
+      return { ok: true, api: "anthropic-messages", label: "Anthropic Messages API" };
+    }
+    return {
+      ok: false,
+      message: summarizeProbeError(body, status || result.status || 0),
+      failures: [
+        {
+          name: "Anthropic Messages API",
+          httpStatus: Number.isFinite(status) ? status : 0,
+          curlStatus: result.status || 0,
+        },
+      ],
+    };
+  } finally {
+    fs.rmSync(bodyFile, { force: true });
+  }
+}
+
+function shouldRetryProviderSelection(probe) {
+  const failures = Array.isArray(probe?.failures) ? probe.failures : [];
+  if (failures.length === 0) return true;
+  return failures.some((failure) => {
+    if ((failure.curlStatus || 0) !== 0) return true;
+    return [0, 401, 403, 404].includes(failure.httpStatus || 0);
+  });
+}
+
+async function validateOpenAiLikeSelection(
+  label,
+  endpointUrl,
+  model,
+  credentialEnv = null,
+  retryMessage = "Please choose a provider/model again."
+) {
+  const apiKey = credentialEnv ? getCredential(credentialEnv) : "";
+  const probe = probeOpenAiLikeEndpoint(endpointUrl, model, apiKey);
+  if (!probe.ok) {
+    console.error(`  ${label} endpoint validation failed.`);
+    console.error(`  ${probe.message}`);
+    if (isNonInteractive()) {
+      process.exit(1);
+    }
+    console.log(`  ${retryMessage}`);
+    console.log("");
+    return null;
+  }
+  console.log(`  ${probe.label} available — OpenClaw will use ${probe.api}.`);
+  return probe.api;
+}
+
+async function validateAnthropicSelection(label, endpointUrl, model, credentialEnv) {
+  const apiKey = getCredential(credentialEnv);
+  const probe = probeAnthropicEndpoint(endpointUrl, model, apiKey);
+  if (!probe.ok) {
+    console.error(`  ${label} endpoint validation failed.`);
+    console.error(`  ${probe.message}`);
+    if (isNonInteractive()) {
+      process.exit(1);
+    }
+    console.log("  Please choose a provider/model again.");
+    console.log("");
+    return null;
+  }
+  console.log(`  ${probe.label} available — OpenClaw will use ${probe.api}.`);
+  return probe.api;
+}
+
+async function validateAnthropicSelectionWithRetryMessage(
+  label,
+  endpointUrl,
+  model,
+  credentialEnv,
+  retryMessage = "Please choose a provider/model again."
+) {
+  const apiKey = getCredential(credentialEnv);
+  const probe = probeAnthropicEndpoint(endpointUrl, model, apiKey);
+  if (!probe.ok) {
+    console.error(`  ${label} endpoint validation failed.`);
+    console.error(`  ${probe.message}`);
+    if (isNonInteractive()) {
+      process.exit(1);
+    }
+    console.log(`  ${retryMessage}`);
+    console.log("");
+    return null;
+  }
+  console.log(`  ${probe.label} available — OpenClaw will use ${probe.api}.`);
+  return probe.api;
+}
+
+async function validateCustomOpenAiLikeSelection(label, endpointUrl, model, credentialEnv) {
+  const apiKey = getCredential(credentialEnv);
+  const probe = probeOpenAiLikeEndpoint(endpointUrl, model, apiKey);
+  if (probe.ok) {
+    console.log(`  ${probe.label} available — OpenClaw will use ${probe.api}.`);
+    return { ok: true, api: probe.api };
+  }
+  console.error(`  ${label} endpoint validation failed.`);
+  console.error(`  ${probe.message}`);
+  if (isNonInteractive()) {
+    process.exit(1);
+  }
+  if (shouldRetryProviderSelection(probe)) {
+    console.log("  Please choose a provider/model again.");
+    console.log("");
+    return { ok: false, retry: "selection" };
+  }
+  console.log(`  Please enter a different ${label} model name.`);
+  console.log("");
+  return { ok: false, retry: "model" };
+}
+
+async function validateCustomAnthropicSelection(label, endpointUrl, model, credentialEnv) {
+  const apiKey = getCredential(credentialEnv);
+  const probe = probeAnthropicEndpoint(endpointUrl, model, apiKey);
+  if (probe.ok) {
+    console.log(`  ${probe.label} available — OpenClaw will use ${probe.api}.`);
+    return { ok: true, api: probe.api };
+  }
+  console.error(`  ${label} endpoint validation failed.`);
+  console.error(`  ${probe.message}`);
+  if (isNonInteractive()) {
+    process.exit(1);
+  }
+  if (shouldRetryProviderSelection(probe)) {
+    console.log("  Please choose a provider/model again.");
+    console.log("");
+    return { ok: false, retry: "selection" };
+  }
+  console.log(`  Please enter a different ${label} model name.`);
+  console.log("");
+  return { ok: false, retry: "model" };
+}
+
+function fetchNvidiaEndpointModels(apiKey) {
+  const bodyFile = path.join(os.tmpdir(), `nemoclaw-nvidia-models-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  try {
+    const cmd = [
+      "curl -sS",
+      `-o ${shellQuote(bodyFile)}`,
+      "-w '%{http_code}'",
+      "-H 'Content-Type: application/json'",
+      '-H "Authorization: Bearer $NEMOCLAW_PROBE_API_KEY"',
+      shellQuote(`${BUILD_ENDPOINT_URL}/models`),
+    ].join(" ");
+    const result = spawnSync("bash", ["-c", cmd], {
+      cwd: ROOT,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        NEMOCLAW_PROBE_API_KEY: apiKey,
+      },
+    });
+    const body = fs.existsSync(bodyFile) ? fs.readFileSync(bodyFile, "utf8") : "";
+    const status = Number(String(result.stdout || "").trim());
+    if (result.status !== 0 || !(status >= 200 && status < 300)) {
+      return { ok: false, message: summarizeProbeError(body, status || result.status || 0) };
+    }
+    const parsed = JSON.parse(body);
+    const ids = Array.isArray(parsed?.data)
+      ? parsed.data.map((item) => item && item.id).filter(Boolean)
+      : [];
+    return { ok: true, ids };
+  } catch (error) {
+    return { ok: false, message: error.message || String(error) };
+  } finally {
+    fs.rmSync(bodyFile, { force: true });
+  }
+}
+
+function validateNvidiaEndpointModel(model, apiKey) {
+  const available = fetchNvidiaEndpointModels(apiKey);
+  if (!available.ok) {
+    return {
+      ok: false,
+      message: `Could not validate model against ${BUILD_ENDPOINT_URL}/models: ${available.message}`,
+    };
+  }
+  if (available.ids.includes(model)) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    message: `Model '${model}' is not available from NVIDIA Endpoints. Checked ${BUILD_ENDPOINT_URL}/models.`,
+  };
+}
+
+function fetchOpenAiLikeModels(endpointUrl, apiKey) {
+  const bodyFile = path.join(os.tmpdir(), `nemoclaw-openai-models-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  try {
+    const cmd = [
+      "curl -sS",
+      `-o ${shellQuote(bodyFile)}`,
+      "-w '%{http_code}'",
+      ...(apiKey ? ['-H "Authorization: Bearer $NEMOCLAW_PROBE_API_KEY"'] : []),
+      shellQuote(`${String(endpointUrl).replace(/\/+$/, "")}/models`),
+    ].join(" ");
+    const result = spawnSync("bash", ["-c", cmd], {
+      cwd: ROOT,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        NEMOCLAW_PROBE_API_KEY: apiKey,
+      },
+    });
+    const body = fs.existsSync(bodyFile) ? fs.readFileSync(bodyFile, "utf8") : "";
+    const status = Number(String(result.stdout || "").trim());
+    if (result.status !== 0 || !(status >= 200 && status < 300)) {
+      return { ok: false, status, message: summarizeProbeError(body, status || result.status || 0) };
+    }
+    const parsed = JSON.parse(body);
+    const ids = Array.isArray(parsed?.data)
+      ? parsed.data.map((item) => item && item.id).filter(Boolean)
+      : [];
+    return { ok: true, ids };
+  } catch (error) {
+    return { ok: false, status: 0, message: error.message || String(error) };
+  } finally {
+    fs.rmSync(bodyFile, { force: true });
+  }
+}
+
+function fetchAnthropicModels(endpointUrl, apiKey) {
+  const bodyFile = path.join(os.tmpdir(), `nemoclaw-anthropic-models-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  try {
+    const cmd = [
+      "curl -sS",
+      `-o ${shellQuote(bodyFile)}`,
+      "-w '%{http_code}'",
+      '-H "x-api-key: $NEMOCLAW_PROBE_API_KEY"',
+      "-H 'anthropic-version: 2023-06-01'",
+      shellQuote(`${String(endpointUrl).replace(/\/+$/, "")}/v1/models`),
+    ].join(" ");
+    const result = spawnSync("bash", ["-c", cmd], {
+      cwd: ROOT,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        NEMOCLAW_PROBE_API_KEY: apiKey,
+      },
+    });
+    const body = fs.existsSync(bodyFile) ? fs.readFileSync(bodyFile, "utf8") : "";
+    const status = Number(String(result.stdout || "").trim());
+    if (result.status !== 0 || !(status >= 200 && status < 300)) {
+      return { ok: false, status, message: summarizeProbeError(body, status || result.status || 0) };
+    }
+    const parsed = JSON.parse(body);
+    const ids = Array.isArray(parsed?.data)
+      ? parsed.data.map((item) => item && (item.id || item.name)).filter(Boolean)
+      : [];
+    return { ok: true, ids };
+  } catch (error) {
+    return { ok: false, status: 0, message: error.message || String(error) };
+  } finally {
+    fs.rmSync(bodyFile, { force: true });
+  }
+}
+
+function validateAnthropicModel(endpointUrl, model, apiKey) {
+  const available = fetchAnthropicModels(endpointUrl, apiKey);
+  if (!available.ok) {
+    if (available.status === 404 || available.status === 405) {
+      return { ok: true, validated: false };
+    }
+    return {
+      ok: false,
+      message: `Could not validate model against ${String(endpointUrl).replace(/\/+$/, "")}/v1/models: ${available.message}`,
+    };
+  }
+  if (available.ids.includes(model)) {
+    return { ok: true, validated: true };
+  }
+  return {
+    ok: false,
+    message: `Model '${model}' is not available from Anthropic. Checked ${String(endpointUrl).replace(/\/+$/, "")}/v1/models.`,
+  };
+}
+
+function validateOpenAiLikeModel(label, endpointUrl, model, apiKey) {
+  const available = fetchOpenAiLikeModels(endpointUrl, apiKey);
+  if (!available.ok) {
+    if (available.status === 404 || available.status === 405) {
+      return { ok: true, validated: false };
+    }
+    return {
+      ok: false,
+      message: `Could not validate model against ${String(endpointUrl).replace(/\/+$/, "")}/models: ${available.message}`,
+    };
+  }
+  if (available.ids.includes(model)) {
+    return { ok: true, validated: true };
+  }
+  return {
+    ok: false,
+    message: `Model '${model}' is not available from ${label}. Checked ${String(endpointUrl).replace(/\/+$/, "")}/models.`,
+  };
+}
+
+async function promptManualModelId(promptLabel, errorLabel, validator = null) {
+  while (true) {
+    const manual = await prompt(promptLabel);
+    const trimmed = manual.trim();
+    if (!trimmed || !isSafeModelId(trimmed)) {
+      console.error(`  Invalid ${errorLabel} model id.`);
+      continue;
+    }
+    if (validator) {
+      const validation = validator(trimmed);
+      if (!validation.ok) {
+        console.error(`  ${validation.message}`);
+        continue;
+      }
+    }
+    return trimmed;
+  }
+}
+
 async function promptCloudModel() {
   console.log("");
   console.log("  Cloud models:");
   CLOUD_MODEL_OPTIONS.forEach((option, index) => {
     console.log(`    ${index + 1}) ${option.label} (${option.id})`);
   });
+  console.log(`    ${CLOUD_MODEL_OPTIONS.length + 1}) Other...`);
   console.log("");
 
   const choice = await prompt("  Choose model [1]: ");
   const index = parseInt(choice || "1", 10) - 1;
-  return (CLOUD_MODEL_OPTIONS[index] || CLOUD_MODEL_OPTIONS[0]).id;
+  if (index >= 0 && index < CLOUD_MODEL_OPTIONS.length) {
+    return CLOUD_MODEL_OPTIONS[index].id;
+  }
+
+  return promptManualModelId(
+    "  NVIDIA Endpoints model id: ",
+    "NVIDIA Endpoints",
+    (model) => validateNvidiaEndpointModel(model, getCredential("NVIDIA_API_KEY"))
+  );
 }
 
-async function promptOllamaModel() {
-  const options = getOllamaModelOptions(runCapture);
-  const defaultModel = getDefaultOllamaModel(runCapture);
+async function promptRemoteModel(label, providerKey, defaultModel, validator = null) {
+  const options = REMOTE_MODEL_OPTIONS[providerKey] || [];
   const defaultIndex = Math.max(0, options.indexOf(defaultModel));
 
   console.log("");
-  console.log("  Ollama models:");
+  console.log(`  ${label} models:`);
   options.forEach((option, index) => {
     console.log(`    ${index + 1}) ${option}`);
   });
+  console.log(`    ${options.length + 1}) Other...`);
   console.log("");
 
   const choice = await prompt(`  Choose model [${defaultIndex + 1}]: `);
   const index = parseInt(choice || String(defaultIndex + 1), 10) - 1;
-  return options[index] || options[defaultIndex] || defaultModel;
+  if (index >= 0 && index < options.length) {
+    return options[index];
+  }
+
+  return promptManualModelId(`  ${label} model id: `, label, validator);
+}
+
+async function promptInputModel(label, defaultModel, validator = null) {
+  while (true) {
+    const value = await prompt(`  ${label} model [${defaultModel}]: `);
+    const trimmed = (value || defaultModel).trim();
+    if (!trimmed || !isSafeModelId(trimmed)) {
+      console.error(`  Invalid ${label} model id.`);
+      continue;
+    }
+    if (validator) {
+      const validation = validator(trimmed);
+      if (!validation.ok) {
+        console.error(`  ${validation.message}`);
+        continue;
+      }
+    }
+    return trimmed;
+  }
+}
+
+async function promptOllamaModel(gpu = null) {
+  const installed = getOllamaModelOptions(runCapture);
+  const options = installed.length > 0 ? installed : getBootstrapOllamaModelOptions(gpu);
+  const defaultModel = getDefaultOllamaModel(runCapture, gpu);
+  const defaultIndex = Math.max(0, options.indexOf(defaultModel));
+
+  console.log("");
+  console.log(installed.length > 0 ? "  Ollama models:" : "  Ollama starter models:");
+  options.forEach((option, index) => {
+    console.log(`    ${index + 1}) ${option}`);
+  });
+  console.log(`    ${options.length + 1}) Other...`);
+  if (installed.length === 0) {
+    console.log("");
+    console.log("  No local Ollama models are installed yet. Choose one to pull and load now.");
+  }
+  console.log("");
+
+  const choice = await prompt(`  Choose model [${defaultIndex + 1}]: `);
+  const index = parseInt(choice || String(defaultIndex + 1), 10) - 1;
+  if (index >= 0 && index < options.length) {
+    return options[index];
+  }
+  return promptManualModelId("  Ollama model id: ", "Ollama");
+}
+
+function pullOllamaModel(model) {
+  const result = spawnSync("bash", ["-c", `ollama pull ${shellQuote(model)}`], {
+    cwd: ROOT,
+    encoding: "utf8",
+    stdio: "inherit",
+    env: { ...process.env },
+  });
+  return result.status === 0;
+}
+
+function prepareOllamaModel(model, installedModels = []) {
+  const alreadyInstalled = installedModels.includes(model);
+  if (!alreadyInstalled) {
+    console.log(`  Pulling Ollama model: ${model}`);
+    if (!pullOllamaModel(model)) {
+      return {
+        ok: false,
+        message:
+          `Failed to pull Ollama model '${model}'. ` +
+          "Check the model name and that Ollama can access the registry, then try another model.",
+      };
+    }
+  }
+
+  console.log(`  Loading Ollama model: ${model}`);
+  run(getOllamaWarmupCommand(model), { ignoreError: true });
+  return validateOllamaModel(model, runCapture);
 }
 
 function isDockerRunning() {
@@ -498,12 +1132,13 @@ function getNonInteractiveProvider() {
     cloud: "build",
     nim: "nim-local",
     vllm: "vllm",
+    anthropiccompatible: "anthropicCompatible",
   };
   const normalized = aliases[providerKey] || providerKey;
-  const validProviders = new Set(["build", "openai", "anthropic", "gemini", "ollama", "custom", "ncp", "nim-local", "vllm"]);
+  const validProviders = new Set(["build", "openai", "anthropic", "anthropicCompatible", "gemini", "ollama", "custom", "nim-local", "vllm"]);
   if (!validProviders.has(normalized)) {
     console.error(`  Unsupported NEMOCLAW_PROVIDER: ${providerKey}`);
-    console.error("  Valid values: build, openai, anthropic, gemini, ollama, custom, ncp, nim-local, vllm");
+    console.error("  Valid values: build, openai, anthropic, anthropicCompatible, gemini, ollama, custom, nim-local, vllm");
     process.exit(1);
   }
 
@@ -626,7 +1261,7 @@ async function preflight() {
 // ── Step 2: Gateway ──────────────────────────────────────────────
 
 async function startGateway(gpu) {
-  step(2, 7, "Starting OpenShell gateway");
+  step(3, 7, "Starting OpenShell gateway");
 
   // Destroy old gateway
   runOpenshell(["gateway", "destroy", "-g", GATEWAY_NAME], { ignoreError: true });
@@ -678,8 +1313,8 @@ async function startGateway(gpu) {
 
 // ── Step 3: Sandbox ──────────────────────────────────────────────
 
-async function createSandbox(gpu) {
-  step(3, 7, "Creating sandbox");
+async function createSandbox(gpu, model, provider, preferredInferenceApi = null) {
+  step(5, 7, "Creating sandbox");
 
   const nameAnswer = await promptOrDefault(
     "  Sandbox name (lowercase, numbers, hyphens) [my-assistant]: ",
@@ -723,7 +1358,8 @@ async function createSandbox(gpu) {
   const { mkdtempSync } = require("fs");
   const os = require("os");
   const buildCtx = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-build-"));
-  fs.copyFileSync(path.join(ROOT, "Dockerfile"), path.join(buildCtx, "Dockerfile"));
+  const stagedDockerfile = path.join(buildCtx, "Dockerfile");
+  fs.copyFileSync(path.join(ROOT, "Dockerfile"), stagedDockerfile);
   run(`cp -r "${path.join(ROOT, "nemoclaw")}" "${buildCtx}/nemoclaw"`);
   run(`cp -r "${path.join(ROOT, "nemoclaw-blueprint")}" "${buildCtx}/nemoclaw-blueprint"`);
   run(`cp -r "${path.join(ROOT, "scripts")}" "${buildCtx}/scripts"`);
@@ -741,6 +1377,7 @@ async function createSandbox(gpu) {
 
   console.log(`  Creating sandbox '${sandboxName}' (this takes a few minutes on first run)...`);
   const chatUiUrl = process.env.CHAT_UI_URL || "http://127.0.0.1:18789";
+  patchStagedDockerfile(stagedDockerfile, model, chatUiUrl, String(Date.now()), provider, preferredInferenceApi);
   const envArgs = [formatEnvAssignment("CHAT_UI_URL", chatUiUrl)];
   if (process.env.NVIDIA_API_KEY) {
     envArgs.push(formatEnvAssignment("NVIDIA_API_KEY", process.env.NVIDIA_API_KEY));
@@ -834,14 +1471,15 @@ async function createSandbox(gpu) {
 
 // ── Step 4: NIM ──────────────────────────────────────────────────
 
-async function setupNim(sandboxName, gpu) {
-  step(4, 7, "Configuring inference (NIM)");
+async function setupNim(gpu) {
+  step(2, 7, "Configuring inference (NIM)");
 
   let model = null;
   let provider = REMOTE_PROVIDER_CONFIG.build.providerName;
   let nimContainer = null;
   let endpointUrl = REMOTE_PROVIDER_CONFIG.build.endpointUrl;
   let credentialEnv = REMOTE_PROVIDER_CONFIG.build.credentialEnv;
+  let preferredInferenceApi = null;
 
   // Detect local inference options
   const hasOllama = !!runCapture("command -v ollama", { ignoreError: true });
@@ -857,11 +1495,10 @@ async function setupNim(sandboxName, gpu) {
       (!ollamaRunning && !(EXPERIMENTAL && vllmRunning) ? " (recommended)" : ""),
   });
   options.push({ key: "openai", label: "OpenAI" });
+  options.push({ key: "custom", label: "Other OpenAI-compatible endpoint" });
   options.push({ key: "anthropic", label: "Anthropic" });
+  options.push({ key: "anthropicCompatible", label: "Other Anthropic-compatible endpoint" });
   options.push({ key: "gemini", label: "Google Gemini" });
-  if (EXPERIMENTAL && gpu && gpu.nimCapable) {
-    options.push({ key: "nim-local", label: "Local NVIDIA NIM [experimental]" });
-  }
   if (hasOllama || ollamaRunning) {
     options.push({
       key: "ollama",
@@ -870,14 +1507,15 @@ async function setupNim(sandboxName, gpu) {
         (ollamaRunning ? " (suggested)" : ""),
     });
   }
+  if (EXPERIMENTAL && gpu && gpu.nimCapable) {
+    options.push({ key: "nim-local", label: "Local NVIDIA NIM [experimental]" });
+  }
   if (EXPERIMENTAL && vllmRunning) {
     options.push({
       key: "vllm",
       label: "Local vLLM [experimental] — running",
     });
   }
-  options.push({ key: "custom", label: "Other OpenAI-compatible endpoint" });
-  options.push({ key: "ncp", label: "NVIDIA Cloud Partner" });
 
   // On macOS without Ollama, offer to install it
   if (!hasOllama && process.platform === "darwin") {
@@ -885,6 +1523,8 @@ async function setupNim(sandboxName, gpu) {
   }
 
   if (options.length > 1) {
+    selectionLoop:
+    while (true) {
     let selected;
 
     if (isNonInteractive()) {
@@ -923,6 +1563,7 @@ async function setupNim(sandboxName, gpu) {
       provider = remoteConfig.providerName;
       credentialEnv = remoteConfig.credentialEnv;
       endpointUrl = remoteConfig.endpointUrl;
+      preferredInferenceApi = null;
 
       if (selected.key === "custom") {
         endpointUrl = isNonInteractive()
@@ -932,12 +1573,12 @@ async function setupNim(sandboxName, gpu) {
           console.error("  Endpoint URL is required for Other OpenAI-compatible endpoint.");
           process.exit(1);
         }
-      } else if (selected.key === "ncp") {
+      } else if (selected.key === "anthropicCompatible") {
         endpointUrl = isNonInteractive()
           ? (process.env.NEMOCLAW_ENDPOINT_URL || "").trim()
-          : await prompt("  NVIDIA Cloud Partner endpoint URL (e.g., https://partner.api.nvidia.com/v1): ");
+          : await prompt("  Anthropic-compatible base URL (e.g., https://proxy.example.com): ");
         if (!endpointUrl) {
-          console.error("  Endpoint URL is required for NVIDIA Cloud Partner.");
+          console.error("  Endpoint URL is required for Other Anthropic-compatible endpoint.");
           process.exit(1);
         }
       }
@@ -962,11 +1603,92 @@ async function setupNim(sandboxName, gpu) {
           await ensureNamedCredential(credentialEnv, remoteConfig.label + " API key", remoteConfig.helpUrl);
         }
         const defaultModel = requestedModel || remoteConfig.defaultModel;
-        model = isNonInteractive()
-          ? defaultModel
-          : await prompt(`  ${remoteConfig.label} model [${defaultModel}]: `) || defaultModel;
+        let modelValidator = null;
+        if (selected.key === "openai" || selected.key === "gemini") {
+          modelValidator = (candidate) =>
+            validateOpenAiLikeModel(remoteConfig.label, endpointUrl, candidate, getCredential(credentialEnv));
+        } else if (selected.key === "anthropic") {
+          modelValidator = (candidate) =>
+            validateAnthropicModel(endpointUrl || ANTHROPIC_ENDPOINT_URL, candidate, getCredential(credentialEnv));
+        }
+        while (true) {
+          if (isNonInteractive()) {
+            model = defaultModel;
+          } else if (remoteConfig.modelMode === "curated") {
+            model = await promptRemoteModel(remoteConfig.label, selected.key, defaultModel, modelValidator);
+          } else {
+            model = await promptInputModel(remoteConfig.label, defaultModel, modelValidator);
+          }
+
+          if (selected.key === "custom") {
+            const validation = await validateCustomOpenAiLikeSelection(
+              remoteConfig.label,
+              endpointUrl,
+              model,
+              credentialEnv
+            );
+            if (validation.ok) {
+              preferredInferenceApi = validation.api;
+              break;
+            }
+            if (validation.retry === "selection") {
+              continue selectionLoop;
+            }
+          } else if (selected.key === "anthropicCompatible") {
+            const validation = await validateCustomAnthropicSelection(
+              remoteConfig.label,
+              endpointUrl || ANTHROPIC_ENDPOINT_URL,
+              model,
+              credentialEnv
+            );
+            if (validation.ok) {
+              preferredInferenceApi = validation.api;
+              break;
+            }
+            if (validation.retry === "selection") {
+              continue selectionLoop;
+            }
+          } else {
+            const retryMessage = "Please choose a provider/model again.";
+            if (selected.key === "anthropic") {
+              preferredInferenceApi = await validateAnthropicSelectionWithRetryMessage(
+                remoteConfig.label,
+                endpointUrl || ANTHROPIC_ENDPOINT_URL,
+                model,
+                credentialEnv,
+                retryMessage
+              );
+            } else {
+              preferredInferenceApi = await validateOpenAiLikeSelection(
+                remoteConfig.label,
+                endpointUrl,
+                model,
+                credentialEnv,
+                retryMessage
+              );
+            }
+            if (preferredInferenceApi) {
+              break;
+            }
+            continue selectionLoop;
+          }
+        }
       }
+
+      if (selected.key === "build") {
+        preferredInferenceApi = await validateOpenAiLikeSelection(
+          remoteConfig.label,
+          endpointUrl,
+          model,
+          credentialEnv
+        );
+        if (!preferredInferenceApi) {
+          continue selectionLoop;
+        }
+      }
+
       console.log(`  Using ${remoteConfig.label} with model: ${model}`);
+      break;
     } else if (selected.key === "nim-local") {
       // List models that fit GPU VRAM
       const models = nim.listModels().filter((m) => m.minGpuMemoryMB <= gpu.totalMemoryMB);
@@ -1014,8 +1736,18 @@ async function setupNim(sandboxName, gpu) {
           provider = "vllm-local";
           credentialEnv = "OPENAI_API_KEY";
           endpointUrl = getLocalProviderBaseUrl(provider);
+          preferredInferenceApi = await validateOpenAiLikeSelection(
+            "Local NVIDIA NIM",
+            endpointUrl,
+            model,
+            credentialEnv
+          );
+          if (!preferredInferenceApi) {
+            continue selectionLoop;
+          }
         }
       }
+      break;
     } else if (selected.key === "ollama") {
       if (!ollamaRunning) {
         console.log("  Starting Ollama...");
@@ -1026,11 +1758,36 @@ async function setupNim(sandboxName, gpu) {
       provider = "ollama-local";
       credentialEnv = "OPENAI_API_KEY";
       endpointUrl = getLocalProviderBaseUrl(provider);
-      if (isNonInteractive()) {
-        model = requestedModel || getDefaultOllamaModel(runCapture);
-      } else {
-        model = await promptOllamaModel();
+      while (true) {
+        const installedModels = getOllamaModelOptions(runCapture);
+        if (isNonInteractive()) {
+          model = requestedModel || getDefaultOllamaModel(runCapture, gpu);
+        } else {
+          model = await promptOllamaModel(gpu);
+        }
+        const probe = prepareOllamaModel(model, installedModels);
+        if (!probe.ok) {
+          console.error(`  ${probe.message}`);
+          if (isNonInteractive()) {
+            process.exit(1);
+          }
+          console.log("  Choose a different Ollama model or select Other.");
+          console.log("");
+          continue;
+        }
+        preferredInferenceApi = await validateOpenAiLikeSelection(
+          "Local Ollama",
+          getLocalProviderValidationBaseUrl(provider),
+          model,
+          null,
+          "Choose a different Ollama model or select Other."
+        );
+        if (!preferredInferenceApi) {
+          continue;
+        }
+        break;
       }
+      break;
     } else if (selected.key === "install-ollama") {
       console.log("  Installing Ollama via Homebrew...");
       run("brew install ollama", { ignoreError: true });
@@ -1041,11 +1798,36 @@ async function setupNim(sandboxName, gpu) {
       provider = "ollama-local";
       credentialEnv = "OPENAI_API_KEY";
       endpointUrl = getLocalProviderBaseUrl(provider);
-      if (isNonInteractive()) {
-        model = requestedModel || getDefaultOllamaModel(runCapture);
-      } else {
-        model = await promptOllamaModel();
+      while (true) {
+        const installedModels = getOllamaModelOptions(runCapture);
+        if (isNonInteractive()) {
+          model = requestedModel || getDefaultOllamaModel(runCapture, gpu);
+        } else {
+          model = await promptOllamaModel(gpu);
+        }
+        const probe = prepareOllamaModel(model, installedModels);
+        if (!probe.ok) {
+          console.error(`  ${probe.message}`);
+          if (isNonInteractive()) {
+            process.exit(1);
+          }
+          console.log("  Choose a different Ollama model or select Other.");
+          console.log("");
+          continue;
+        }
+        preferredInferenceApi = await validateOpenAiLikeSelection(
+          "Local Ollama",
+          getLocalProviderValidationBaseUrl(provider),
+          model,
+          null,
+          "Choose a different Ollama model or select Other."
+        );
+        if (!preferredInferenceApi) {
+          continue;
+        }
+        break;
       }
+      break;
     } else if (selected.key === "vllm") {
       console.log("  ✓ Using existing vLLM on localhost:8000");
       provider = "vllm-local";
@@ -1070,23 +1852,34 @@ async function setupNim(sandboxName, gpu) {
         console.error("  Could not query vLLM models endpoint. Is vLLM running on localhost:8000?");
         process.exit(1);
       }
+      preferredInferenceApi = await validateOpenAiLikeSelection(
+        "Local vLLM",
+        getLocalProviderValidationBaseUrl(provider),
+        model,
+        credentialEnv
+      );
+      if (!preferredInferenceApi) {
+        continue selectionLoop;
+      }
+      break;
     }
+  }
   }
 
   if (nimContainer) {
     registry.updateSandbox(sandboxName, { nimContainer });
   }
 
-  return { model, provider, endpointUrl, credentialEnv };
+  return { model, provider, endpointUrl, credentialEnv, preferredInferenceApi };
 }
 
 // ── Step 5: Inference provider ───────────────────────────────────
 
 async function setupInference(sandboxName, model, provider, endpointUrl = null, credentialEnv = null) {
-  step(5, 7, "Setting up inference provider");
+  step(4, 7, "Setting up inference provider");
   runOpenshell(["gateway", "select", GATEWAY_NAME], { ignoreError: true });
 
-  if (provider === "nvidia-prod" || provider === "nvidia-nim" || provider === "openai-api" || provider === "anthropic-prod" || provider === "gemini-api" || provider === "compatible-endpoint" || provider === "nvidia-ncp") {
+  if (provider === "nvidia-prod" || provider === "nvidia-nim" || provider === "openai-api" || provider === "anthropic-prod" || provider === "compatible-anthropic-endpoint" || provider === "gemini-api" || provider === "compatible-endpoint") {
     const config = provider === "nvidia-nim"
       ? REMOTE_PROVIDER_CONFIG.build
       : Object.values(REMOTE_PROVIDER_CONFIG).find((entry) => entry.providerName === provider);
@@ -1307,9 +2100,9 @@ function printDashboard(sandboxName, model, provider) {
   if (provider === "nvidia-prod" || provider === "nvidia-nim") providerLabel = "NVIDIA Endpoints";
   else if (provider === "openai-api") providerLabel = "OpenAI";
   else if (provider === "anthropic-prod") providerLabel = "Anthropic";
+  else if (provider === "compatible-anthropic-endpoint") providerLabel = "Other Anthropic-compatible endpoint";
   else if (provider === "gemini-api") providerLabel = "Google Gemini";
   else if (provider === "compatible-endpoint") providerLabel = "Other OpenAI-compatible endpoint";
-  else if (provider === "nvidia-ncp") providerLabel = "NVIDIA Cloud Partner";
   else if (provider === "vllm-local") providerLabel = "Local vLLM";
   else if (provider === "ollama-local") providerLabel = "Local Ollama";
 
@@ -1340,11 +2133,11 @@ async function onboard(opts = {}) {
   console.log("  ===================");
 
   const gpu = await preflight();
+  const { model, provider, endpointUrl, credentialEnv, preferredInferenceApi } = await setupNim(gpu);
   process.env.NEMOCLAW_OPENSHELL_BIN = getOpenshellBinary();
   await startGateway(gpu);
-  const sandboxName = await createSandbox(gpu);
-  const { model, provider, endpointUrl, credentialEnv } = await setupNim(sandboxName, gpu);
-  await setupInference(sandboxName, model, provider, endpointUrl, credentialEnv);
+  await setupInference(GATEWAY_NAME, model, provider, endpointUrl, credentialEnv);
+  const sandboxName = await createSandbox(gpu, model, provider, preferredInferenceApi);
   await setupOpenclaw(sandboxName, model, provider);
   await setupPolicies(sandboxName);
   printDashboard(sandboxName, model, provider);
@@ -1353,6 +2146,11 @@ async function onboard(opts = {}) {
 module.exports = {
   buildSandboxConfigSyncScript,
   getFutureShellPathHint,
+  createSandbox,
+  getSandboxInferenceConfig,
+  getFutureShellPathHint,
+  createSandbox,
+  getSandboxInferenceConfig,
   getInstalledOpenshellVersion,
   getStableGatewayImageRef,
   hasStaleGateway,
@@ -1363,4 +2161,5 @@ module.exports = {
   setupInference,
   setupNim,
   writeSandboxConfigSyncFile,
+  patchStagedDockerfile,
 };

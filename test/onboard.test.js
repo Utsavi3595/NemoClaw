@@ -11,8 +11,14 @@ import { describe, expect, it } from "vitest";
 import {
   buildSandboxConfigSyncScript,
   getFutureShellPathHint,
+  createSandbox,
+  getSandboxInferenceConfig,
+  getFutureShellPathHint,
+  createSandbox,
+  getSandboxInferenceConfig,
   getInstalledOpenshellVersion,
   getStableGatewayImageRef,
+  patchStagedDockerfile,
   pruneStaleSandboxEntry,
   runCaptureOpenshell,
   writeSandboxConfigSyncFile,
@@ -30,12 +36,117 @@ describe("onboard helpers", () => {
       onboardedAt: "2026-03-18T12:00:00.000Z",
     });
 
-    expect(script).toMatch(/cat > ~\/\.nemoclaw\/config\.json/);
-    expect(script).toMatch(/"model": "nemotron-3-nano:30b"/);
-    expect(script).toMatch(/"credentialEnv": "OPENAI_API_KEY"/);
-    expect(script).not.toMatch(/openclaw\.json/);
-    expect(script).not.toMatch(/openclaw models set/);
-    expect(script).toMatch(/^exit$/m);
+    assert.match(script, /cat > ~\/\.nemoclaw\/config\.json/);
+    assert.match(script, /"model": "nemotron-3-nano:30b"/);
+    assert.match(script, /"credentialEnv": "OPENAI_API_KEY"/);
+    assert.doesNotMatch(script, /cat > ~\/\.openclaw\/openclaw\.json/);
+    assert.doesNotMatch(script, /openclaw models set/);
+    assert.match(script, /^exit$/m);
+  });
+
+  it("patches the staged Dockerfile with the selected model and chat UI URL", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-dockerfile-"));
+    const dockerfilePath = path.join(tmpDir, "Dockerfile");
+    fs.writeFileSync(
+      dockerfilePath,
+      [
+        "ARG NEMOCLAW_MODEL=nvidia/nemotron-3-super-120b-a12b",
+        "ARG NEMOCLAW_PROVIDER_KEY=nvidia",
+        "ARG NEMOCLAW_PRIMARY_MODEL_REF=nvidia/nemotron-3-super-120b-a12b",
+        "ARG CHAT_UI_URL=http://127.0.0.1:18789",
+        "ARG NEMOCLAW_INFERENCE_COMPAT_B64=e30=",
+        "ARG NEMOCLAW_BUILD_ID=default",
+      ].join("\n")
+    );
+
+    try {
+      patchStagedDockerfile(dockerfilePath, "gpt-5.4", "http://127.0.0.1:19999", "build-123", "openai-api");
+      const patched = fs.readFileSync(dockerfilePath, "utf8");
+      assert.match(patched, /^ARG NEMOCLAW_MODEL=gpt-5\.4$/m);
+      assert.match(patched, /^ARG NEMOCLAW_PROVIDER_KEY=openai$/m);
+      assert.match(patched, /^ARG NEMOCLAW_PRIMARY_MODEL_REF=openai\/gpt-5\.4$/m);
+      assert.match(patched, /^ARG CHAT_UI_URL=http:\/\/127\.0\.0\.1:19999$/m);
+      assert.match(patched, /^ARG NEMOCLAW_BUILD_ID=build-123$/m);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("maps NVIDIA Endpoints to the routed inference provider", () => {
+    assert.deepEqual(
+      getSandboxInferenceConfig("qwen/qwen3.5-397b-a17b", "nvidia-prod", "openai-completions"),
+      {
+        providerKey: "inference",
+        primaryModelRef: "inference/qwen/qwen3.5-397b-a17b",
+        inferenceBaseUrl: "https://inference.local/v1",
+        inferenceApi: "openai-completions",
+        inferenceCompat: null,
+      }
+    );
+  });
+
+  it("patches the staged Dockerfile for Anthropic with anthropic-messages routing", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-dockerfile-anthropic-"));
+    const dockerfilePath = path.join(tmpDir, "Dockerfile");
+    fs.writeFileSync(
+      dockerfilePath,
+      [
+        "ARG NEMOCLAW_MODEL=nvidia/nemotron-3-super-120b-a12b",
+        "ARG NEMOCLAW_PROVIDER_KEY=nvidia",
+        "ARG NEMOCLAW_PRIMARY_MODEL_REF=nvidia/nemotron-3-super-120b-a12b",
+        "ARG CHAT_UI_URL=http://127.0.0.1:18789",
+        "ARG NEMOCLAW_INFERENCE_BASE_URL=https://inference.local/v1",
+        "ARG NEMOCLAW_INFERENCE_API=openai-completions",
+        "ARG NEMOCLAW_INFERENCE_COMPAT_B64=e30=",
+        "ARG NEMOCLAW_BUILD_ID=default",
+      ].join("\n")
+    );
+
+    try {
+      patchStagedDockerfile(
+        dockerfilePath,
+        "claude-sonnet-4-5",
+        "http://127.0.0.1:18789",
+        "build-claude",
+        "anthropic-prod"
+      );
+      const patched = fs.readFileSync(dockerfilePath, "utf8");
+      assert.match(patched, /^ARG NEMOCLAW_MODEL=claude-sonnet-4-5$/m);
+      assert.match(patched, /^ARG NEMOCLAW_PROVIDER_KEY=anthropic$/m);
+      assert.match(patched, /^ARG NEMOCLAW_PRIMARY_MODEL_REF=anthropic\/claude-sonnet-4-5$/m);
+      assert.match(patched, /^ARG NEMOCLAW_INFERENCE_BASE_URL=https:\/\/inference\.local$/m);
+      assert.match(patched, /^ARG NEMOCLAW_INFERENCE_API=anthropic-messages$/m);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("maps Gemini to the routed inference provider with supportsStore disabled", () => {
+    assert.deepEqual(
+      getSandboxInferenceConfig("gemini-2.5-flash", "gemini-api"),
+      {
+        providerKey: "inference",
+        primaryModelRef: "inference/gemini-2.5-flash",
+        inferenceBaseUrl: "https://inference.local/v1",
+        inferenceApi: "openai-completions",
+        inferenceCompat: {
+          supportsStore: false,
+        },
+      }
+    );
+  });
+
+  it("uses a probed Responses API override when one is available", () => {
+    assert.deepEqual(
+      getSandboxInferenceConfig("gpt-5.4", "openai-api", "openai-responses"),
+      {
+        providerKey: "openai",
+        primaryModelRef: "openai/gpt-5.4",
+        inferenceBaseUrl: "https://inference.local/v1",
+        inferenceApi: "openai-responses",
+        inferenceCompat: null,
+      }
+    );
   });
 
   it("pins the gateway image to the installed OpenShell release version", () => {
@@ -71,7 +182,7 @@ describe("onboard helpers", () => {
   });
 
   it("passes credential names to openshell without embedding secret values in argv", () => {
-    const repoRoot = path.join(__dirname, "..");
+    const repoRoot = path.join(import.meta.dirname, "..");
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-inference-"));
     const fakeBin = path.join(tmpDir, "bin");
     const scriptPath = path.join(tmpDir, "setup-inference-check.js");
@@ -141,7 +252,7 @@ const { setupInference } = require(${onboardPath});
   });
 
   it("uses native Anthropic provider creation without embedding the secret in argv", () => {
-    const repoRoot = path.join(__dirname, "..");
+    const repoRoot = path.join(import.meta.dirname, "..");
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-anthropic-"));
     const fakeBin = path.join(tmpDir, "bin");
     const scriptPath = path.join(tmpDir, "setup-anthropic-check.js");
@@ -211,7 +322,7 @@ const { setupInference } = require(${onboardPath});
   });
 
   it("updates OpenAI-compatible providers without passing an unsupported --type flag", () => {
-    const repoRoot = path.join(__dirname, "..");
+    const repoRoot = path.join(import.meta.dirname, "..");
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-openai-update-"));
     const fakeBin = path.join(tmpDir, "bin");
     const scriptPath = path.join(tmpDir, "setup-openai-update-check.js");
@@ -283,7 +394,7 @@ const { setupInference } = require(${onboardPath});
   });
 
   it("drops stale local sandbox registry entries when the live sandbox is gone", () => {
-    const repoRoot = path.join(__dirname, "..");
+    const repoRoot = path.join(import.meta.dirname, "..");
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-stale-sandbox-"));
     const fakeBin = path.join(tmpDir, "bin");
     const scriptPath = path.join(tmpDir, "stale-sandbox-check.js");
@@ -324,8 +435,77 @@ console.log(JSON.stringify({ liveExists, sandbox: registry.getSandbox("my-assist
     assert.equal(payload.sandbox, null);
   });
 
+  it("builds the sandbox without uploading an external OpenClaw config file", async () => {
+    const repoRoot = path.join(import.meta.dirname, "..");
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-create-sandbox-"));
+    const fakeBin = path.join(tmpDir, "bin");
+    const scriptPath = path.join(tmpDir, "create-sandbox-check.js");
+    const onboardPath = JSON.stringify(path.join(repoRoot, "bin", "lib", "onboard.js"));
+    const runnerPath = JSON.stringify(path.join(repoRoot, "bin", "lib", "runner.js"));
+    const registryPath = JSON.stringify(path.join(repoRoot, "bin", "lib", "registry.js"));
+    const preflightPath = JSON.stringify(path.join(repoRoot, "bin", "lib", "preflight.js"));
+    const credentialsPath = JSON.stringify(path.join(repoRoot, "bin", "lib", "credentials.js"));
+
+    fs.mkdirSync(fakeBin, { recursive: true });
+    fs.writeFileSync(path.join(fakeBin, "openshell"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+
+    const script = String.raw`
+const runner = require(${runnerPath});
+const registry = require(${registryPath});
+const preflight = require(${preflightPath});
+const credentials = require(${credentialsPath});
+
+const commands = [];
+runner.run = (command, opts = {}) => {
+  commands.push({ command, env: opts.env || null });
+  return { status: 0 };
+};
+runner.runCapture = (command) => {
+  if (command.includes("'sandbox' 'get' 'my-assistant'")) return "";
+  if (command.includes("'sandbox' 'list'")) return "my-assistant Ready";
+  return "";
+};
+registry.registerSandbox = () => true;
+registry.removeSandbox = () => true;
+preflight.checkPortAvailable = async () => ({ ok: true });
+credentials.prompt = async () => "";
+
+const { createSandbox } = require(${onboardPath});
+
+(async () => {
+  process.env.OPENSHELL_GATEWAY = "nemoclaw";
+  const sandboxName = await createSandbox(null, "gpt-5.4");
+  console.log(JSON.stringify({ sandboxName, commands }));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+`;
+    fs.writeFileSync(scriptPath, script);
+
+    const result = spawnSync(process.execPath, [scriptPath], {
+      cwd: repoRoot,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        HOME: tmpDir,
+        PATH: `${fakeBin}:${process.env.PATH || ""}`,
+        NEMOCLAW_NON_INTERACTIVE: "1",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout.trim().split("\n").pop());
+    assert.equal(payload.sandboxName, "my-assistant");
+    const createCommand = payload.commands.find((entry) => entry.command.includes("'sandbox' 'create'"));
+    assert.ok(createCommand, "expected sandbox create command");
+    assert.match(createCommand.command, /'nemoclaw-start'/);
+    assert.doesNotMatch(createCommand.command, /'--upload'/);
+    assert.doesNotMatch(createCommand.command, /OPENCLAW_CONFIG_PATH/);
+  });
+
   it("accepts gateway inference when system inference is separately not configured", () => {
-    const repoRoot = path.join(__dirname, "..");
+    const repoRoot = path.join(import.meta.dirname, "..");
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-inference-get-"));
     const fakeBin = path.join(tmpDir, "bin");
     const scriptPath = path.join(tmpDir, "inference-get-check.js");
@@ -393,7 +573,7 @@ const { setupInference } = require(${onboardPath});
   });
 
   it("accepts gateway inference output that omits the Route line", () => {
-    const repoRoot = path.join(__dirname, "..");
+    const repoRoot = path.join(import.meta.dirname, "..");
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-inference-route-"));
     const fakeBin = path.join(tmpDir, "bin");
     const scriptPath = path.join(tmpDir, "inference-route-check.js");
