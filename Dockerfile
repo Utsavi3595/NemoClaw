@@ -154,10 +154,15 @@ RUN openclaw doctor --fix > /dev/null 2>&1 || true \
 # The Landlock policy (/sandbox/.openclaw in read_only) provides defense-in-depth
 # once OpenShell enables enforcement.
 # Ref: https://github.com/NVIDIA/NemoClaw/issues/514
+# Lock the entire .openclaw directory tree.
+# SECURITY: chmod 755 (not 1777) — the sandbox user can READ but not WRITE
+# to this directory. This prevents the agent from replacing symlinks
+# (e.g., pointing /sandbox/.openclaw/hooks to an attacker-controlled path).
+# The writable state lives in .openclaw-data, reached via the symlinks.
 USER root
 RUN chown root:root /sandbox/.openclaw \
     && find /sandbox/.openclaw -mindepth 1 -maxdepth 1 -exec chown -h root:root {} + \
-    && chmod 1777 /sandbox/.openclaw \
+    && chmod 755 /sandbox/.openclaw \
     && chmod 444 /sandbox/.openclaw/openclaw.json
 
 # Pin config hash at build time so the entrypoint can verify integrity.

@@ -15,9 +15,14 @@
 
 set -euo pipefail
 
+# SECURITY: Lock down PATH so the agent cannot inject malicious binaries
+# into commands executed by the entrypoint or auto-pair watcher.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 NEMOCLAW_CMD=("$@")
 CHAT_UI_URL="${CHAT_UI_URL:-http://127.0.0.1:18789}"
 PUBLIC_PORT=18789
+OPENCLAW="$(command -v openclaw)"  # Resolve once, use absolute path everywhere
 
 # ── Config integrity check ──────────────────────────────────────
 # The config hash was pinned at build time. If it doesn't match,
@@ -89,11 +94,14 @@ PYTOKEN
 
 start_auto_pair() {
   # Run auto-pair as sandbox user (it talks to the gateway via CLI)
-  nohup gosu sandbox python3 - <<'PYAUTOPAIR' >> /tmp/gateway.log 2>&1 &
+  # SECURITY: Pass resolved openclaw path to prevent PATH hijacking
+  OPENCLAW_BIN="$OPENCLAW" nohup gosu sandbox python3 - <<'PYAUTOPAIR' >> /tmp/gateway.log 2>&1 &
 import json
+import os
 import subprocess
 import time
 
+OPENCLAW = os.environ.get('OPENCLAW_BIN', 'openclaw')
 DEADLINE = time.time() + 600
 QUIET_POLLS = 0
 APPROVED = 0
@@ -103,7 +111,7 @@ def run(*args):
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
 while time.time() < DEADLINE:
-    rc, out, err = run('openclaw', 'devices', 'list', '--json')
+    rc, out, err = run(OPENCLAW, 'devices', 'list', '--json')
     if rc != 0 or not out:
         time.sleep(1)
         continue
@@ -123,7 +131,7 @@ while time.time() < DEADLINE:
             request_id = (device or {}).get('requestId')
             if not request_id:
                 continue
-            arc, aout, aerr = run('openclaw', 'devices', 'approve', request_id, '--json')
+            arc, aout, aerr = run(OPENCLAW, 'devices', 'approve', request_id, '--json')
             if arc == 0:
                 APPROVED += 1
                 print(f'[auto-pair] approved request={request_id}')
@@ -164,11 +172,26 @@ if [ ${#NEMOCLAW_CMD[@]} -gt 0 ]; then
   exec gosu sandbox "${NEMOCLAW_CMD[@]}"
 fi
 
+# SECURITY: Protect gateway log from sandbox user tampering
+touch /tmp/gateway.log
+chown gateway:gateway /tmp/gateway.log
+chmod 600 /tmp/gateway.log
+
+# Verify symlinks in .openclaw point to expected targets (prevent symlink injection)
+for link in agents extensions workspace skills hooks identity devices canvas cron; do
+  target="$(readlink -f "/sandbox/.openclaw/$link" 2>/dev/null || true)"
+  expected="/sandbox/.openclaw-data/$link"
+  if [ "$target" != "$expected" ]; then
+    echo "[SECURITY] Symlink /sandbox/.openclaw/$link points to unexpected target: $target (expected $expected)"
+    exit 1
+  fi
+done
+
 # Start the gateway as the 'gateway' user.
 # SECURITY: The sandbox user cannot kill this process because it runs
 # under a different UID. The fake-HOME attack no longer works because
 # the agent cannot restart the gateway with a tampered config.
-nohup gosu gateway openclaw gateway run > /tmp/gateway.log 2>&1 &
+nohup gosu gateway "$OPENCLAW" gateway run > /tmp/gateway.log 2>&1 &
 GATEWAY_PID=$!
 echo "[gateway] openclaw gateway launched as 'gateway' user (pid $GATEWAY_PID)"
 
