@@ -454,6 +454,8 @@ const runner = require(${runnerPath});
 const registry = require(${registryPath});
 const preflight = require(${preflightPath});
 const credentials = require(${credentialsPath});
+const childProcess = require("node:child_process");
+const { EventEmitter } = require("node:events");
 
 const commands = [];
 runner.run = (command, opts = {}) => {
@@ -469,6 +471,18 @@ registry.registerSandbox = () => true;
 registry.removeSandbox = () => true;
 preflight.checkPortAvailable = async () => ({ ok: true });
 credentials.prompt = async () => "";
+
+childProcess.spawn = (...args) => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  commands.push({ command: args[1][1], env: args[2]?.env || null });
+  process.nextTick(() => {
+    child.stdout.emit("data", Buffer.from("Created sandbox: my-assistant\n"));
+    child.emit("close", 0);
+  });
+  return child;
+};
 
 const { createSandbox } = require(${onboardPath});
 
